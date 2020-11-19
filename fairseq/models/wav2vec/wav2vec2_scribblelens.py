@@ -681,7 +681,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return result
 
-    def miara_acc(x, y):
+    def miara_acc(self, x, y):
         x_size1 = x.size(1)
         xx = x.repeat_interleave(x.size(1), 1) # BxTxC -> BxT^2xC
         yy = y.repeat(1, y.size(1), 1) # BxTxC -> BxT^2xC
