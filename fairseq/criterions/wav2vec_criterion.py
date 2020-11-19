@@ -90,6 +90,7 @@ class Wav2vecCriterion(FairseqCriterion):
             "ntokens": sample_size,
             "nsentences": sample["id"].numel(),
             "sample_size": sample_size,
+            **model.get_alignment_metrics(**sample["net_input"], alignments=sample["alignments"])
         }
 
         for lk in self.log_keys:

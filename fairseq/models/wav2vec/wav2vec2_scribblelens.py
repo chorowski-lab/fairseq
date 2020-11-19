@@ -648,6 +648,37 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return result
 
+    def get_alignment_metrics(self, source, alignments, padding_mask=None):
+        import sklearn.metrics
+
+        with torch.no_grad():
+            features = self.feature_extractor(source)
+            features = features.transpose(1, 2)
+            features = self.layer_norm(features)
+
+            q = self.quantizer(features, produce_targets=True)
+
+            if padding_mask is not None:
+                padding_mask = padding_mask.squeeze(1)
+                scale = padding_mask.size(1) // features.size(1)
+                alignments = alignments[:, ::scale]
+
+            targets = q['targets'].reshape(-1, 2)
+            
+            ali_es = targets[:, 0] + 320 * targets[:, 1]
+            ali_gt = alignments.reshape(-1)
+
+            ami = sklearn.metrics.adjusted_mutual_info_score(ali_gt, ali_es, average_method='arithmetic')
+            nmi = sklearn.metrics.normalized_mutual_info_score(ali_gt, ali_es, average_method='arithmetic')
+            ars = sklearn.metrics.adjusted_rand_score(ali_gt, ali_es)
+
+            return {
+                "adjusted_mutual_info": ami,
+                "normalized_mutual_info": nmi,
+                "adjusted_rand_score": ars
+            }
+
+
     def quantize(self, x):
         assert self.quantizer is not None
         x = self.feature_extractor(x)
