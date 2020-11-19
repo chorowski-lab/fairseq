@@ -3,10 +3,12 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+logger = logging.getLogger(__name__)
 
 class GumbelVectorQuantizer(nn.Module):
     def __init__(
@@ -153,6 +155,12 @@ class GumbelVectorQuantizer(nn.Module):
             .view(bsz * tsz, self.groups, -1)
         )
         hard_probs = torch.mean(hard_x.float(), dim=0)
+        
+        torch.set_printoptions(profile="full")
+        logger.info("hard_probs:\n{}".format(hard_probs))
+        #logger.info("hard_probs unique:\n{}".format(torch.unique(hard_probs, sorted=False).size()))
+        torch.set_printoptions(profile="default")
+        
         result["code_perplexity"] = torch.exp(
             -torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)
         ).sum()
@@ -163,6 +171,10 @@ class GumbelVectorQuantizer(nn.Module):
         result["prob_perplexity"] = torch.exp(
             -torch.sum(avg_probs * torch.log(avg_probs + 1e-7), dim=-1)
         ).sum()
+
+        #torch.set_printoptions(profile="full")
+        #logger.info("avg_probs:\n{}".format(avg_probs))
+        #torch.set_printoptions(profile="default")
 
         result["temp"] = self.curr_temp
 

@@ -195,6 +195,16 @@ def train(args, trainer, task, epoch_itr):
         default_log_format=("tqdm" if not args.no_progress_bar else "simple"),
     )
 
+    #torch.set_printoptions(profile="full")    
+    for name, p in trainer.model.named_parameters():
+        if "quantizer.vars" in name or "quantizer.weight_proj.weight" in name or "project_q.weight" in name:
+            torch.set_printoptions(profile="full")    
+            logger.info("{}\n{}".format(name, p.data))
+            torch.set_printoptions(profile="default")
+        else:
+            logger.info("{}\n{}".format(name, p.data))
+    #torch.set_printoptions(profile="default")
+
     trainer.begin_epoch(epoch_itr.epoch)
 
     valid_losses = [None]

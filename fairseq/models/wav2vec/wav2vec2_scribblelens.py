@@ -29,6 +29,8 @@ from fairseq.modules import (
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import buffered_arange
 
+logger = logging.getLogger(__name__)
+
 @register_model("wav2vec2_scribblelens")
 class Wav2Vec2ModelSL(BaseFairseqModel):
     @staticmethod
@@ -502,6 +504,11 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         if self.cross_sample_negatives > 0 and self.n_negatives > 0:
             neg_idxs = torch.cat([neg_idxs, cross_neg_idxs], dim=1)
 
+        torch.set_printoptions(profile="full")
+        logger.info("neg_idxs:\n{}".format(neg_idxs))
+        #logger.info("neg_idxs unique:\n{}".format(torch.unique(neg_idxs, sorted=False).size()))
+        torch.set_printoptions(profile="default")
+        
         negs = y[neg_idxs.view(-1)]
         negs = negs.view(
             bsz, num, self.n_negatives + self.cross_sample_negatives, fsz
@@ -511,8 +518,15 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         return negs, neg_idxs
 
     def compute_preds(self, x, y, negatives):
-
+        
         neg_is_pos = (y == negatives).all(-1)
+        #torch.set_printoptions(profile="full")
+        #logger.info("y:\n{}".format(y))
+        #logger.info("negatives:\n{}".format(negatives))
+        #logger.info("neg_is_pos:\n{}".format(neg_is_pos))
+        #torch.set_printoptions(profile="default")
+
+
         y = y.unsqueeze(0)
         targets = torch.cat([y, negatives], dim=0)
 
@@ -557,6 +571,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         features = self.dropout_input(features)
         unmasked_features = self.dropout_features(unmasked_features)
+        
+        #torch.set_printoptions(profile="full")
+        #logger.info("unmasked_features:\n{}".format(unmasked_features))
+        #torch.set_printoptions(profile="default")
 
         num_vars = None
         code_ppl = None
@@ -594,24 +612,32 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             return {"x": x, "padding_mask": padding_mask}
 
         if self.quantizer:
-            q = self.quantizer(y, produce_targets=False)
+            q = self.quantizer(y, produce_targets=True)
             y = q["x"]
             num_vars = q["num_vars"]
             code_ppl = q["code_perplexity"]
             prob_ppl = q["prob_perplexity"]
             curr_temp = q["temp"]
+            targets = q["targets"]
+            
+            torch.set_printoptions(profile="full")
+            logger.info("quantizer targets:\n{}".format(targets))
+            torch.set_printoptions(profile="default")
 
             y = self.project_q(y)
 
             if self.negatives_from_everywhere:
+                logger.info("negatives_from_everywhere")
                 neg_cands, *_ = self.quantizer(unmasked_features, produce_targets=False)
                 negs, _ = self.sample_negatives(neg_cands, y.size(1))
                 negs = self.project_q(negs)
 
             else:
+                logger.info("negatives_from_everywhere else block")
                 negs, _ = self.sample_negatives(y, y.size(1))
 
             if self.codebook_negatives > 0:
+                logger.info("codebook_negatives > 0")
                 cb_negs = self.quantizer.sample_from_codebook(
                     y.size(0) * y.size(1), self.codebook_negatives
                 )
@@ -630,15 +656,22 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                 negs, _ = self.sample_negatives(y, y.size(1))
 
         x = x[mask_indices].view(x.size(0), -1, x.size(-1))
+        
+        #torch.set_printoptions(profile="full")
+        #logger.info("mask_indices:\n{}".format(mask_indices))
+        #torch.set_printoptions(profile="default")
 
         if self.target_glu:
             y = self.target_glu(y)
             negs = self.target_glu(negs)
 
         x = self.final_proj(x)
+        num_correct, num_all = self.miara_acc(x, y)
         x = self.compute_preds(x, y, negs)
 
         result = {"x": x, "padding_mask": padding_mask, "features_pen": features_pen}
+        result["num_correct"] = num_correct
+        result["num_all"] = num_all
 
         if prob_ppl is not None:
             result["prob_perplexity"] = prob_ppl
@@ -647,6 +680,19 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             result["temp"] = curr_temp
 
         return result
+
+    def miara_acc(x, y):
+        x_size1 = x.size(1)
+        xx = x.repeat_interleave(x.size(1), 1) # BxTxC -> BxT^2xC
+        yy = y.repeat(1, y.size(1), 1) # BxTxC -> BxT^2xC
+        cos = torch.cosine_similarity(xx.float(), yy.float(), dim=-1).view(-1, x.size(1), x.size(1)) # BxT^2 -> BxTxT
+        maxi, _ = cos.max(dim=2, keepdim=True) # BxTx1
+        maxi = maxi * torch.eye(x.size(1), device=x.device).expand(cos.size(0), -1, -1) # BxTxT
+        
+        num_correct = (cos == maxi).sum().item()
+        num_all = x.size(0) * x.size(1)
+        logger.info("{} / {}".format(num_correct, num_all))
+        return num_correct, num_all
 
     def quantize(self, x):
         assert self.quantizer is not None

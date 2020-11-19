@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import logging
 
 import torch
 import torch.nn.functional as F
@@ -12,6 +13,7 @@ from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.logging.meters import safe_round
 
+logger = logging.getLogger(__name__)
 
 @register_criterion('wav2vec')
 class Wav2vecCriterion(FairseqCriterion):
@@ -41,9 +43,19 @@ class Wav2vecCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
+        #torch.set_printoptions(profile="full")
+        #logger.info("{}".format(sample['net_input']['source']))
+        #torch.set_printoptions(profile="default")
+
         net_output = model(**sample['net_input'])
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output)
+        
+        torch.set_printoptions(profile="full")
+        logger.info("logits\n{}".format(logits))
+        minusinf = (logits == float("-inf")).sum(-1)
+        logger.info("minus infs\n{} / {}".format(minusinf, logits.size(-1)))
+        torch.set_printoptions(profile="default")
 
         weights = None
         if hasattr(model, 'get_target_weights') and not self.infonce:
@@ -55,6 +67,7 @@ class Wav2vecCriterion(FairseqCriterion):
 
         if self.infonce:
             loss = F.cross_entropy(logits, target, reduction="sum" if reduce else "none",)
+            logger.info("cross entropy loss {}".format(loss))
         else:
             loss = F.binary_cross_entropy_with_logits(logits, target.float(), weights, reduction="sum" if reduce else "none",)
 
@@ -74,6 +87,14 @@ class Wav2vecCriterion(FairseqCriterion):
                     p = coef * p.float() * sample_size
                     loss += p
                     losses.append(p)
+
+        #llll = loss.item() if reduce else loss
+        #if llll / sample_size >= 3.0:
+        #    import ptvsd
+        #    ptvsd.enable_attach(('0.0.0.0', 7310))
+        #    print("Attach debugger now")
+        #    ptvsd.wait_for_attach() 
+        #    logger.info("Loss per sample {} >= 3.0!\n".format(llll))
 
         logging_output = {
             'loss': loss.item() if reduce else loss,
@@ -105,6 +126,8 @@ class Wav2vecCriterion(FairseqCriterion):
 
                 logging_output["correct"] = corr
                 logging_output["count"] = count
+                logging_output["num_correct"] = net_output["num_correct"]
+                logging_output["num_all"] = net_output["num_all"]
 
         if log_pred:
             logging_output['logits'] = logits.cpu().numpy()
@@ -129,6 +152,12 @@ class Wav2vecCriterion(FairseqCriterion):
         total = sum(log.get("count", 0) for log in logging_outputs)
         metrics.log_scalar("_total", total)
 
+        num_correct = sum(log.get("num_correct", 0) for log in logging_outputs)
+        metrics.log_scalar("num_correct", num_correct)
+
+        num_all = sum(log.get("num_all", 0) for log in logging_outputs)
+        metrics.log_scalar("num_all", num_all)
+
 
         if total > 0:
             metrics.log_derived(
@@ -137,8 +166,14 @@ class Wav2vecCriterion(FairseqCriterion):
                 if meters["_total"].sum > 0
                 else float("nan"),
             )
+            metrics.log_derived(
+                "accuracy_2",
+                lambda meters: safe_round(meters["num_correct"].sum / meters["num_all"].sum, 5)
+                if meters["num_all"].sum > 0
+                else float("nan"),
+            )
 
-        builtin_keys = {'loss', 'ntokens', 'nsentences', 'sample_size', 'correct', 'count'}
+        builtin_keys = {'loss', 'ntokens', 'nsentences', 'sample_size', 'correct', 'count', 'num_correct', 'num_all'}
 
         for k in logging_outputs[0]:
             if k not in builtin_keys:
