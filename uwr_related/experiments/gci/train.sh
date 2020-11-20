@@ -20,3 +20,4 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d \
   --labels "a" \
   --enable-padding # crashes without that, needs to make all lines same-size
+  

@@ -525,7 +525,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return logits
 
-    def forward(self, source, padding_mask=None, mask=True, features_only=False):
+    def forward(self, source, padding_mask=None, mask=True, features_only=False, alignments=None):
         # padding_mask = None  # JCh: padding_mask prob need to be True where the data is padded. mask=True => data invalid
 
         if self.feature_grad_mult > 0:
@@ -551,6 +551,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             assert extra == 0
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
+            if alignments is not None:
+                alignments = alignments[:, ::scale]
 
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
@@ -581,6 +583,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                 y = unmasked_features[mask_indices].view(
                     unmasked_features.size(0), -1, unmasked_features.size(-1)
                 )
+                if alignments is not None:
+                    alignments = alignments[mask_indices]
             else:
                 y = unmasked_features
         else:
@@ -594,7 +598,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             return {"x": x, "padding_mask": padding_mask}
 
         if self.quantizer:
-            q = self.quantizer(y, produce_targets=False)
+            q = self.quantizer(y, produce_targets=(alignments is not None))
             y = q["x"]
             num_vars = q["num_vars"]
             code_ppl = q["code_perplexity"]
@@ -646,36 +650,29 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             result["num_vars"] = num_vars
             result["temp"] = curr_temp
 
+        if alignments is not None:
+            result = {
+                **result,
+                **self.get_alignment_metrics(q["targets"], alignments)
+            }
+
         return result
 
-    def get_alignment_metrics(self, source, alignments, padding_mask=None):
+    def get_alignment_metrics(self, targets, ali_gt):
+        # We currently only quantize unmasked features
         import sklearn.metrics
 
         with torch.no_grad():
-            features = self.feature_extractor(source)
-            features = features.transpose(1, 2)
-            features = self.layer_norm(features)
-
-            q = self.quantizer(features, produce_targets=True)
-
-            if padding_mask is not None:
-                padding_mask = padding_mask.squeeze(1)
-                scale = padding_mask.size(1) // features.size(1)
-                alignments = alignments[:, ::scale]
-
-            targets = q['targets'].reshape(-1, 2)
-            
-            ali_es = targets[:, 0] + 320 * targets[:, 1]
-            ali_gt = alignments.reshape(-1)
-
-            ami = sklearn.metrics.adjusted_mutual_info_score(ali_gt, ali_es, average_method='arithmetic')
-            nmi = sklearn.metrics.normalized_mutual_info_score(ali_gt, ali_es, average_method='arithmetic')
-            ars = sklearn.metrics.adjusted_rand_score(ali_gt, ali_es)
+            targets = targets.reshape(-1, self.quantizer.groups)
+            ali_es = targets[:, 0] + self.quantizer.num_vars * targets[:, 1]
 
             return {
-                "adjusted_mutual_info": ami,
-                "normalized_mutual_info": nmi,
-                "adjusted_rand_score": ars
+                "adjusted_mutual_info": 
+                    sklearn.metrics.adjusted_mutual_info_score(ali_gt, ali_es, average_method='arithmetic'),
+                "normalized_mutual_info": 
+                    sklearn.metrics.normalized_mutual_info_score(ali_gt, ali_es, average_method='arithmetic'),
+                "adjusted_rand_score":
+                    sklearn.metrics.adjusted_rand_score(ali_gt, ali_es)
             }
 
 

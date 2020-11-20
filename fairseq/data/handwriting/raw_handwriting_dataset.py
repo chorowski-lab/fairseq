@@ -211,6 +211,7 @@ class RawHandwritingDataset(FairseqDataset):
             # TODO check collate labels to common length in a tensor
             # TODO EOS stuff (?)
             target_lengths = torch.LongTensor([len(t) for t in collated_labels_nontensor])
+            input["alignments"] = collated_alignments
             return {
                 "id": torch.LongTensor([s["id"] for s in samples]), 
                 "net_input": input,
