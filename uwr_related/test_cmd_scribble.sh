@@ -38,7 +38,8 @@
 
 
 python train.py --distributed-world-size 1 --update-freq 2 \
-  /pio/scratch/1/i283340/MGR/NewSetup/DistSup/data \
+  /pio/scratch/2/mstyp/wav2vec/DistSup/data \
+  --vocab-path /pio/scratch/2/mstyp/wav2vec/DistSup/data/tasman.alphabet.plus.space.mode5.json
   --save-dir ../try_sl1 --num-workers 0 \
   --task scribblelens --criterion wav2vec --arch wav2vec2_scribblelens \
   --valid-subset test --pad-to-multiples-of 4 `#--max-sample-size 256` \
