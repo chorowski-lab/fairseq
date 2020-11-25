@@ -60,3 +60,58 @@
     - Scribblelens:
         
         TODO
+
+8. CTC:
+    - Audio:
+        1. Dependencies (needed for CTC evaluation - https://github.com/facebookresearch/wav2letter/wiki/Building-Python-bindings):
+
+            ```
+            conda install -c conda-forge fftw
+            conda install -c conda-forge cmake
+            conda install -c conda-forge openblas
+
+            cd ..
+            git clone git@github.com:kpu/kenlm
+            cd kenlm
+            mkdir -p build
+            cd build
+            cmake ..
+            make -j 4
+            export KENLM_ROOT_DIR=/path/to/kenlm
+
+            cd ../..
+            git clone git@github.com:facebookresearch/wav2letter.git
+            cd wav2letter
+            git checkout tlikhomanenko-patch-1
+            cd bindings/python/
+            pip install -e .
+            ```
+        
+        2. Generate vocab for train split:
+
+            ```
+            python examples/wav2vec/libri_labels.py ../data/LibriSpeech/train.tsv --output-dir ../data/LibriSpeech --output-name train
+            ```
+
+        3. Get pretrained language model (optional for audio - check `--w2l-decoder` flag in CTC evaluation script):
+            TODO
+            ```
+            cd ..
+            mkdir pretrained_models
+            cd pretrained_models
+            wget https://dl.fbaipublicfiles.com/wav2letter/sota/2019/lm/lm_librispeech_word_transformer.pt
+            # ??? Be sure to upper-case the language model vocab after downloading it. ???
+            wget https://dl.fbaipublicfiles.com/wav2letter/sota/2019/lm/lm_librispeech_word_transformer.dict
+
+            ```
+        
+        4. Fine-tune a pretrained model with CTC:
+
+            From the top of `fairseq` repo call: `uwr_related/bash ctc_fine_tune_audio.sh`
+            
+        5. Evaluate a CTC model:
+            From the top of `fairseq` repo call: `uwr_related/bash ctc_eval_audio.sh`
+
+    - Scribblelens:
+
+        TODO
