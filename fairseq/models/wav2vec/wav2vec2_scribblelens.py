@@ -298,6 +298,17 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             "--conv-bias", action="store_true", help="include bias in conv encoder"
         )
 
+        parser.add_argument(
+            "--smartpooling", action="store_true", help="whether to perform smartpooling"
+        )
+
+        parser.add_argument(
+            "--smartpooling-factor", 
+            type=float, 
+            default=3, 
+            help="factor by which the sequence's length will be reduced in smartpooling"
+        )
+
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -312,6 +323,9 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             conv_bias=args.conv_bias,
         )
 
+        self.smartpooling = args.smartpooling
+        self.smartpooling_factor = args.smartpooling_factor
+        self.smartpooling_filters = torch.tensor([[[[-1,1],[1,-1]]]]).float()
         self.post_extract_proj = (
             nn.Linear(self.embed, args.encoder_embed_dim)
             if self.embed != args.encoder_embed_dim and not args.quantize_input
@@ -402,6 +416,11 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         super().upgrade_state_dict_named(state_dict, name)
         """Upgrade a (possibly old) state dict for new versions of fairseq."""
         return state_dict
+
+    def to(self, *args, **kwargs):
+        self = super().to(*args, **kwargs) 
+        self.smartpooling_filters = self.smartpooling_filters.to(*args, **kwargs) 
+        return self
 
     @classmethod
     def build_model(cls, args, task=None):
@@ -525,6 +544,43 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return logits
 
+    def smartpool(self, features, padding_mask=None):
+        features_tmp = F.pad(features,(0,0,1,0))
+        new_lens = (features_tmp[:,1:,:] - features_tmp[:,:-1,:]).abs().sum(dim=2)
+        new_lens = new_lens / new_lens.sum(1, keepdim=True) * (features.size(1) / self.smartpooling_factor) # Reducing the original length T by some factor
+        
+        features, interp_weights = self.warp(features, new_lens)
+        if padding_mask is not None :
+            padding_mask = padding_mask.unsqueeze(2)
+            padding_mask = interp_weights @ padding_mask.float()
+            padding_mask = (padding_mask > 0).squeeze(2)
+
+        return features, padding_mask
+
+    def warp(self, X, new_lens):
+        new_lens_cs = new_lens.cumsum(1)
+        # This really searches for the low boundary of each new pixel
+        pixel_contributions = new_lens_cs.view(1, -1, 1) - torch.arange(torch.round(new_lens_cs[0, -1]).item(), device=X.device).view(1, 1, -1)
+        pixel_contributions = pixel_contributions.view(X.size(0), X.size(1), pixel_contributions.size(2))
+        # Zero out the negative contributions, i.e. pixels which come before each row                              
+        pixel_contributions = torch.max(torch.tensor(0.0, device=X.device), pixel_contributions)       
+        
+        # # This contains the cumulated pixel lengths for all pixels in each 
+        # pixel_contributions
+    
+        pixel_contributions = pixel_contributions.unsqueeze(1)
+        interp_weights = F.conv2d(pixel_contributions, self.smartpooling_filters, padding=1)
+        interp_weights = interp_weights[:,:,:-1,1:] # Removing padding
+        interp_weights = interp_weights.squeeze(1)
+
+        # # Each column corresponds to a new element. Its values are the 
+        # # weights associated with the original data.
+        # interp_weights
+
+        interp_weights = interp_weights.transpose(1, 2)
+        Xnew = interp_weights @ X
+        return Xnew, interp_weights
+
     def forward(self, source, padding_mask=None, mask=True, features_only=False):
         # padding_mask = None  # JCh: padding_mask prob need to be True where the data is padded. mask=True => data invalid
 
@@ -541,8 +597,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
-        unmasked_features = features.clone()
-
+        
         if padding_mask is not None:
             assert padding_mask.size(1) == 1
             padding_mask = padding_mask.squeeze(1)
@@ -551,6 +606,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             assert extra == 0
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
+
+        if self.smartpooling:
+            features, padding_mask = self.smartpool(features, padding_mask=padding_mask)
+        unmasked_features = features.clone()
 
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
