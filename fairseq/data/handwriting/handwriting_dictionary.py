@@ -16,11 +16,11 @@ class HandwritingDictionary(Alphabet):
         ):  #extra_special_symbols=None,):
 
         # [!] bos, pad, eos etc. need to be in dict file
-        super().__init__(alphabet_file, unk=(unk,))
+        super().__init__(alphabet_file, unk=(unk,), ensure_in_dict_on_no_vocab=(bos, pad, eos, unk))
         #self._alphabet = Alphabet(alphabet_file, unk=(unk,))  
         for c, descr in zip((bos, pad, eos, unk), ("bos", "pad", "eos", "unk")):
             if not self.existDict(c):
-                print('WARNING:', descr, 'token', c, 'not in vocab')
+                print('ERROR:', descr, 'token', c, 'not in vocab and vocab chosen, not constructed')
         self.bos_char, self.unk_char, self.pad_char, self.eos_char = bos, unk, pad, eos
         #self.symbols = []
         #self.count = []

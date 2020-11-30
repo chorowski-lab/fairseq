@@ -98,7 +98,9 @@ class ScribblelensTask(LegacyFairseqTask):
             split (str): name of the split (e.g., train, valid, test)
         """
 
-        vocab_path = self.args.vocab_path if self.args.vocab_path is not None else self.args.data + '/tasman.alphabet.plus.space.mode5.json'
+        vocab_path = self.args.vocab_path if self.args.vocab_path is not None else ''  
+        # [now file in default location not used, needs to be specified, otherwise trying to construct vocab from scratch] 
+        # self.args.data + '/tasman.alphabet.plus.space.mode5.json'
 
         if not self.args.labels:
             self.datasets[split] = FileHandwritingDataset(

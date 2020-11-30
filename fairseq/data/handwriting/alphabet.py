@@ -62,9 +62,10 @@ class Alphabet:
     """
     def __init__(self, filename_=None, input_dict=None,
                  translation_dict={'_': ' '},
-                 unk=("@",), blank=("*",), space=(' ', '_')):
+                 unk=("@",), blank=("*",), space=(' ', '_'),
+                 ensure_in_dict_on_no_vocab=None): # option for ensuring chars in case the vocab is not given
 
-        if filename_:
+        if filename_:  # both None and '' will be 'False'
             self.chars = bidict(self.readDictionary(filename_))
             print('Alphabet constructed from', filename_,
                   'size=', len(self.chars))
@@ -73,12 +74,18 @@ class Alphabet:
             print('Alphabet constructed from dictionnary, '
                   'size=', len(self.chars))
         else:
-            self.chars = bidict({
+            base_special_dict = {
                     k: i
                     for i, chs in enumerate([blank, space, unk])
                     for k in chs
-            })
+            }
+            if ensure_in_dict_on_no_vocab:
+                for c in ensure_in_dict_on_no_vocab:
+                    if c not in base_special_dict:
+                        base_special_dict[c] = len(base_special_dict)
+            self.chars = bidict(base_special_dict)
             print('Alphabet constructed empty')
+        
         for c in unk:
             if c not in self.chars:
                 print('Warning: UNK token', c, 'not in vocab')
