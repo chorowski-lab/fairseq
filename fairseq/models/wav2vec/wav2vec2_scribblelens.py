@@ -298,6 +298,12 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             "--conv-bias", action="store_true", help="include bias in conv encoder"
         )
 
+        parser.add_argument(
+            "--compute-alignment-metrics",
+            action="store_true",
+            help="compute mutual info and rand scores",
+        )
+
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -536,6 +542,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             with torch.no_grad():
                 features = self.feature_extractor(source)
 
+        compute_alignment_metrics = self.args.compute_alignment_metrics and alignments is not None
+
         # features = torch.squeeze(features)  # TODO check if this makes sense; also seems length reduction is too big for this input
         features_pen = features.float().pow(2).mean()
 
@@ -551,7 +559,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             assert extra == 0
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
-            if alignments is not None:
+            if compute_alignment_metrics:
                 alignments = alignments[:, ::scale]
 
         if self.post_extract_proj is not None:
@@ -583,7 +591,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                 y = unmasked_features[mask_indices].view(
                     unmasked_features.size(0), -1, unmasked_features.size(-1)
                 )
-                if alignments is not None:
+                if compute_alignment_metrics:
                     alignments = alignments[mask_indices]
             else:
                 y = unmasked_features
@@ -598,7 +606,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             return {"x": x, "padding_mask": padding_mask}
 
         if self.quantizer:
-            q = self.quantizer(y, produce_targets=(alignments is not None))
+            q = self.quantizer(y, produce_targets=compute_alignment_metrics)
             y = q["x"]
             num_vars = q["num_vars"]
             code_ppl = q["code_perplexity"]
@@ -650,7 +658,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             result["num_vars"] = num_vars
             result["temp"] = curr_temp
 
-        if alignments is not None:
+        if compute_alignment_metrics:
             result = {
                 **result,
                 **self.get_alignment_metrics(q["targets"], alignments)
