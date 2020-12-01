@@ -6,9 +6,13 @@ class SegmentDict:
     def __init__(self, lines):  # lines assumed to be of shape [#lines x line_len * k]
         # (line#, place in line): (begin in line, end in line, sum(x), sum(x^2)) ; sums are possibly vectors
         self._dct = {(i, j): (j, j, lines[i][j], np.square(lines[i][j])) for i in range(len(lines)) for j in range(len(lines[i]))}
+        self._size = len(self._dct)  # sometimes 1, sometimes 2 netries per segment - better keep a counter
         
     # there is a 'segment' implicit format (tuple) used: (line#, leftIndex(begin), rightIndex(end))
         
+    def numSegments(self):
+        return self._size
+    
     def segmentInDict(self, segment):
         line, leftIdx, rightIdx = segment
         if (line, leftIdx) not in self._dct:
@@ -18,10 +22,15 @@ class SegmentDict:
         
     def removeSegment(self, segment):
         line, leftIdx, rightIdx = segment
+        wasThere = False
         if (line, leftIdx) in self._dct:
             del self._dct[(line, leftIdx)]
+            wasThere = True
         if (line, rightIdx) in self._dct:
             del self._dct[(line, rightIdx)]
+            wasThere = True
+        if wasThere:
+            self._size -= 1
             
     def mergeSegments(self, segment1, segment2):
         line1, left1, right1 = segment1
@@ -31,12 +40,13 @@ class SegmentDict:
             return None
         linearSum1, squaresSum1 = self.getSegmentSums(segment1)
         linearSum2, squaresSum2 = self.getSegmentSums(segment2)
-        # remove old segments
+        # remove old segments; will update _size
         self.removeSegment(segment1)
         self.removeSegment(segment2)
-        # add a new merged one
+        # add a new merged one; need to update _size by hand
         self._dct[(line1, left1)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
         self._dct[(line1, right2)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
+        self._size += 1
         return (line1, left1, right2)
             
     def getSegments(self):

@@ -9,7 +9,7 @@ def variance(linearSum, squaresSum, size):
 
 
 # lines is a tensor or array of tensors?
-def hierarchicalVarianceSegmentation(k, linesGPU):
+def hierarchicalVarianceSegmentation(linesGPU, k=None):  # k is per line (total num of segments to be made is k*numLines)
     
     # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
     lines = linesGPU.detach().to('cpu').numpy()  
@@ -40,7 +40,7 @@ def hierarchicalVarianceSegmentation(k, linesGPU):
     varChanges = []
     merges = []
     
-    while len(q):
+    while len(q) and (k is None or segmentsDict.numSegments() > k * lines.shape[0]):
     
         varChange, left, right = heappop(q)
         merged = segmentsDict.mergeSegments(left, right)  # checks if merge is valid
@@ -87,4 +87,4 @@ if __name__ == '__main__':
 
     tensor = torch.tensor([[[1,2],[1,2],[3,4],[3,4],[3,4],[8,9]], [[1,2],[1,2],[3,4],[3,4],[3,4],[8,9]]], dtype=torch.float64)
     print(tensor[0][1])
-    print(hierarchicalVarianceSegmentation(7, tensor))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
+    print(hierarchicalVarianceSegmentation(tensor, 2))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
