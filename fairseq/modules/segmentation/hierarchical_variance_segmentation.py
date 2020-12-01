@@ -2,19 +2,15 @@
 import numpy as np
 from .segment_dict import *
 from heapq import *
-
+from torch.autograd import Function
 
 def variance(linearSum, squaresSum, size):
     return np.sum((squaresSum / size) - np.square(linearSum / size))  # sum of "variance vector"
 
 
 # lines is a tensor or array of tensors?
-def hierarchicalVarianceSegmentation(linesGPU, k=None):  # k is per line (total num of segments to be made is k*numLines)
-    
-    # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
-    lines = linesGPU.detach().to('cpu').numpy()  
-    # https://discuss.pytorch.org/t/cant-convert-cuda-tensor-to-numpy-use-tensor-cpu-to-copy-the-tensor-to-host-memory-first/38301 ,
-    # https://discuss.pytorch.org/t/what-is-the-cpu-in-pytorch/15007/3
+# won't modify lines; assuming lines in on CPU if a tensor
+def hierarchicalVarianceSegmentation(lines, k=None):  # k is per line (total num of segments to be made is k*numLines)
     
    # TODO check if tensor parts correctly taken etc. [!]
     segmentsDict = SegmentDict(lines)
@@ -73,6 +69,70 @@ def hierarchicalVarianceSegmentation(linesGPU, k=None):  # k is per line (total 
             
     return varChanges, merges
 
+class HierarchicalVarianceSegmentationLayer(Function):
+
+    @staticmethod
+    def flatten(x):
+        s = x.shape()
+        if len(s) < 3:
+            return x
+        if len(s) == 3:
+            return x.view(-1, s[2])
+        assert False
+
+    # perhaps that ^ is not needed, and restore_shapes also
+
+    @staticmethod
+    def forward(ctx, inputGPU, k=None, allowKrange=None):  # k for strict num of segments, allowKrange for range and choosing 'best' split point
+
+        assert k is None or allowKrange is None  # mutually exclusive options
+
+        # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
+        input = inputGPU.detach().to('cpu').numpy()  
+        # https://discuss.pytorch.org/t/cant-convert-cuda-tensor-to-numpy-use-tensor-cpu-to-copy-the-tensor-to-host-memory-first/38301 ,
+        # https://discuss.pytorch.org/t/what-is-the-cpu-in-pytorch/15007/3
+
+        varChanges, merges = hierarchicalVarianceSegmentation(input, k=k)  # won't modify input
+        if allowKrange:  # full merge done above, k=None
+            begin, end = allowKrange
+            assert begin <= end
+            beginIdx = len(varChanges) - end  # max allowed num of segments, smallest num of merges
+            endIdx = len(varChanges) - begin  # min allowed num of segments, biggest num of merges
+            prefSums = []
+            s = 0.
+            for chng in varChanges:
+                s += chng
+                prefSums.append(chng)
+            best = -1
+            where = -1
+            for i in range(beginIdx, min(endIdx+1, len(varChanges))):
+                sufSum = s - prefSums[i]  # sum after this index
+                prefSum = prefSums[i] if prefSums[i] > 0. else 1.  # don't div by 0
+                # v the bigger the better split point; suffix div by prefix averages of variance change
+                here = (sufSum / (len(varChanges)-i))  /  (prefSum / (i+1.))  
+                if here > best:
+                    best = here
+                    where = i
+            if where == -1:
+                print("WARNING: problems choosing best num segments")
+                where = int((beginIdx + endIdx) // 2)
+            varChanges = varChanges[:where+1]  # this one is not really needed
+            merges = merges[:where+1]
+            
+        # now need to actually perform merge on tensor and later TODO bring it back to what device it was on (read at the beginning?)
+        # some union find or something? actually, can make it simpler, only need to see last merge for every place; just fill some 'merged' tensor with ID of segment
+        # but will also need to put that in order; maybe just sort segment tuples for that later
+        finalSegments, segmentNumsInLines = SegmentDict.getFinalSegments(merges)
+
+        ctx.save_for_backward(finalSegments, segmentNumsInLines)
+        ctx.mark_non_differentiable(finalSegments, segmentNumsInLines)
+
+        # TODO perform actual averaging and return as the 1st argument; 
+        # TODO this will need padding somehow...; 
+        # TODO actually, this also need to get a padding mask and ignore padded stuff; 
+        # TODO output its padding mask!
+
+        return [], finalSegments, segmentNumsInLines
 
 
 if __name__ == '__main__':

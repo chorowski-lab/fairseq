@@ -80,3 +80,32 @@ class SegmentDict:
         line, left, _ = segment
         _, _, linearSum, squaresSum = self._dct[(line, left)]
         return (linearSum, squaresSum)
+
+    @staticmethod
+    def getFinalSegments(merges, inputShape):
+
+        visited = np.zeros(inputShape, dt=np.int32)
+        finalSegments = []
+        for i in range(len(merges)-1,-1,-1):
+            leftSegm, rightSegm = merges[i]
+            line, beginLeft, endLeft = leftSegm
+            if visited[line][beginLeft] != 0:
+                continue  # merge already seen
+            _, beginRight, endRight = rightSegm
+            finalSegments.append((line, beginLeft, endRight))
+            visited[line][beginLeft:(endRight+1)] = 1
+
+        lineCounter = 0
+        prevLine = 1
+        res = {}  # {(line, #ofSegmentInLine): (line, beginIdx, endIdx)}
+        segmentsInLines = []  # numbers of segments in lines
+        for line, begin, end in sorted(finalSegments):
+            if line != prevLine:
+                prevLine = line
+                segmentsInLines.append(lineCounter)
+                lineCounter = 0
+            res[(line, lineCounter)] = (line, begin, end)
+            lineCounter += 1
+        segmentsInLines.append(lineCounter)
+
+        return res, segmentsInLines  # there will be always at least 1 segment in a line
