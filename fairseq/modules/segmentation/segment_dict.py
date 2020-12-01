@@ -3,10 +3,10 @@ import numpy as np
 
 class SegmentDict:
     
-    def __init__(self, lines):  # lines assumed to be of shape [#lines x line_len * k]
+    def __init__(self, lines, padMask=None):  # lines assumed to be of shape [#lines x line_len * k]
         # (line#, place in line): (begin in line, end in line, sum(x), sum(x^2)) ; sums are possibly vectors
-        self._dct = {(i, j): (j, j, lines[i][j], np.square(lines[i][j])) for i in range(len(lines)) for j in range(len(lines[i]))}
-        self._size = len(self._dct)  # sometimes 1, sometimes 2 netries per segment - better keep a counter
+        self._dct = {(i, j): (j, j, lines[i][j], np.square(lines[i][j])) for i in range(len(lines)) for j in range(len(lines[i])) if padMask is None or not padMask[i][j]}
+        self._size = len(self._dct)  # sometimes 1 (now all segments have 1 entry), sometimes later 2 entries per segment - better keep a counter
         
     # there is a 'segment' implicit format (tuple) used: (line#, leftIndex(begin), rightIndex(end))
         

@@ -10,10 +10,10 @@ def variance(linearSum, squaresSum, size):
 
 # lines is a tensor or array of tensors?
 # won't modify lines; assuming lines in on CPU if a tensor
-def hierarchicalVarianceSegmentation(lines, k=None):  # k is per line (total num of segments to be made is k*numLines)
+def hierarchicalVarianceSegmentation(lines, padMask=None, k=None):  # k is per line (total num of segments to be made is k*numLines)
     
    # TODO check if tensor parts correctly taken etc. [!]
-    segmentsDict = SegmentDict(lines)
+    segmentsDict = SegmentDict(lines, padMask=padMask)
     
     # maybe will need to change this to arrays or so instead of dicts for efficiency
     
@@ -83,16 +83,21 @@ class HierarchicalVarianceSegmentationLayer(Function):
     # perhaps that ^ is not needed, and restore_shapes also
 
     @staticmethod
-    def forward(ctx, inputGPU, k=None, allowKrange=None):  # k for strict num of segments, allowKrange for range and choosing 'best' split point
+    def forward(ctx, inputGPU, padMask=None, k=None, allowKrange=None):  # k for strict num of segments, allowKrange for range and choosing 'best' split point
 
         assert k is None or allowKrange is None  # mutually exclusive options
+
+        # TODO if input only 2-dim, add another dimension possibly (W x H -> 1 x W x H, consistent with B x W x H - later assuming that in some places)
+
+        wasInputOnGPU = inputGPU.is_cuda
+        wasPadMaskOnGPU = padMask.is_cuda if padMask is not None else False
 
         # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
         input = inputGPU.detach().to('cpu').numpy()  
         # https://discuss.pytorch.org/t/cant-convert-cuda-tensor-to-numpy-use-tensor-cpu-to-copy-the-tensor-to-host-memory-first/38301 ,
         # https://discuss.pytorch.org/t/what-is-the-cpu-in-pytorch/15007/3
 
-        varChanges, merges = hierarchicalVarianceSegmentation(input, k=k)  # won't modify input
+        varChanges, merges = hierarchicalVarianceSegmentation(input, padMask=padMask, k=k)  # won't modify input
         if allowKrange:  # full merge done above, k=None
             begin, end = allowKrange
             assert begin <= end
@@ -119,20 +124,37 @@ class HierarchicalVarianceSegmentationLayer(Function):
             varChanges = varChanges[:where+1]  # this one is not really needed
             merges = merges[:where+1]
             
-        # now need to actually perform merge on tensor and later TODO bring it back to what device it was on (read at the beginning?)
-        # some union find or something? actually, can make it simpler, only need to see last merge for every place; just fill some 'merged' tensor with ID of segment
-        # but will also need to put that in order; maybe just sort segment tuples for that later
         finalSegments, segmentNumsInLines = SegmentDict.getFinalSegments(merges)
 
-        ctx.save_for_backward(finalSegments, segmentNumsInLines)
-        ctx.mark_non_differentiable(finalSegments, segmentNumsInLines)
+        maxSegments = max(segmentNumsInLines)
+        paddingMaskOut = np.full((input.shape[0], maxSegments), False)  #torch.BoolTensor(size=(input.shape[0], maxSegments)).fill_(False)
+        for i, n in enumerate(segmentNumsInLines):
+            paddingMaskOut[i][n:] = True
+        
+        segmented = np.full((input.shape[0], maxSegments, input.shape[2]), 0.)  #torch.tensor(size=(input.shape[0], maxSegments, input.shape[2])).fill_(0.)
+        for line, idxInLine in finalSegments.keySet():
+            line, begin, end = finalSegments[(line, idxInLine)]
+            segmented[line][idxInLine] = np.avg(input[line][begin:(end+1)])  #torch.mean(input[line][begin:(end+1)])
 
-        # TODO perform actual averaging and return as the 1st argument; 
-        # TODO this will need padding somehow...; 
-        # TODO actually, this also need to get a padding mask and ignore padded stuff; 
-        # TODO output its padding mask!
+        resOutput = torch.tensor(segmented).to('cuda') if wasInputOnGPU else torch.tensor(segmented)
+        resPadMask = torch.BoolTensor(paddingMaskOut).to('cuda') if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
 
-        return [], finalSegments, segmentNumsInLines
+        ctx.save_for_backward(finalSegments, segmentNumsInLines, paddingMask, paddingMaskOut, input.shape)
+        ctx.mark_non_differentiable(resPadMask, finalSegments, segmentNumsInLines)  # TODO those/some are not tensors, not sure if should do that
+
+        return resOutput, resPadMask, finalSegments, segmentNumsInLines
+
+    @staticmethod
+    def backward(ctx, dxThrough, outPadMask=None, finalSegments=None, segmentNumsInLines=None):
+
+        finalSegments, segmentNumsInLines, paddingMask, paddingMaskOut, inputShape = ctx.saved_tensors
+
+        dx = torch.tensor(size=inputShape).fill_(0.)
+        for line, idxInLine in finalSegments.keySet():
+            line, begin, end = finalSegments[(line, idxInLine)]
+            dx[line][begin:(end+1)] = dxThrough[line][idxInLine] / (end - begin + 1)
+
+        return dx, None, None, None
 
 
 if __name__ == '__main__':
