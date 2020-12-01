@@ -82,9 +82,9 @@ class SegmentDict:
         return (linearSum, squaresSum)
 
     @staticmethod
-    def getFinalSegments(merges, inputShape):
+    def getFinalSegments(merges, shape, padMask=None):  # shape needs to be B x W, without height!
 
-        visited = np.zeros(inputShape, dt=np.int32)
+        visited = np.zeros(shape, dtype=np.int32)
         finalSegments = []
         for i in range(len(merges)-1,-1,-1):
             leftSegm, rightSegm = merges[i]
@@ -95,8 +95,14 @@ class SegmentDict:
             finalSegments.append((line, beginLeft, endRight))
             visited[line][beginLeft:(endRight+1)] = 1
 
+        # add length-1 segments that are there not padded but were not a part of any merge
+        for i in range(visited.shape[0]):
+            for j in range(visited.shape[1]):
+                if not visited[i][j] and (padMask is None or not padMask[i][j]):
+                    finalSegments.append((i, j, j))
+
         lineCounter = 0
-        prevLine = 1
+        prevLine = 0  # don't append useless 0 at the beginning
         res = {}  # {(line, #ofSegmentInLine): (line, beginIdx, endIdx)}
         segmentsInLines = []  # numbers of segments in lines
         for line, begin, end in sorted(finalSegments):
