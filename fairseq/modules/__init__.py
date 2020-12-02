@@ -73,6 +73,7 @@ __all__ = [
     "TransformerEncoderLayer",
     "TransposeLast",
     "VGGBlock",
-    'hierarchicalVarianceSegmentation',
+    "hierarchicalVarianceSegmentation",
+    "HierarchicalVarianceSegmentationLayer",
     "unfold1d",
 ]
