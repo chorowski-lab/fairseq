@@ -1,4 +1,5 @@
 
+import torch
 import numpy as np
 from .segment_dict import *
 from heapq import *
@@ -143,7 +144,7 @@ class HierarchicalVarianceSegmentationLayer(Function):
             line, begin, end = finalSegments[(line, idxInLine)]
             segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
 
-        resOutput = torch.tensor(segmented).to(inputDevice)   #if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
+        resOutput = torch.tensor(segmented, dtype=inputGPU.dtype).to(inputDevice)   #if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
         resPadMask = torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice)   #if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
 
         #print("********************", dir(ctx))
@@ -163,7 +164,7 @@ class HierarchicalVarianceSegmentationLayer(Function):
         dxThroughDevice = dxThrough.device
 
         paddingMask, paddingMaskOut = ctx.saved_tensors
-        dx = torch.empty(size=ctx.inputShape).fill_(0.).to('cpu')
+        dx = torch.empty(size=ctx.inputShape, dtype=dxThrough.dtype).fill_(0.).to('cpu')
 
         for line, idxInLine in ctx.finalSegments.keys():
             line, begin, end = ctx.finalSegments[(line, idxInLine)]
@@ -182,12 +183,10 @@ if __name__ == '__main__':
 
     # run from .. with python -m segmentation.hierarchical_variance_segmentation
 
-    import torch
-
     tensor = torch.tensor([[[1,2],[1,2],[3,4],[3,4],[3,4],[8,9],[8,9]], [[1,2],[1,2],[3,4],[3,4],[3,4],[8,9],[8,9]]], dtype=torch.float64).requires_grad_(True)
     print(tensor[0][1])
+    print(hierarchicalVarianceSegmentation(tensor.detach().numpy(), padMask=None, k=4))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
     print(hierarchicalVarianceSegmentation(tensor.detach().numpy(), padMask=None, k=2))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
-    print(hierarchicalVarianceSegmentation(tensor.detach().numpy(), padMask=None, k=1))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
 
     print("-------------------------- torch ---------------------------")
     # (tensor, padMask, k, kSumRange)

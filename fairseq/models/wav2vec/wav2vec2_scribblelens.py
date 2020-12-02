@@ -25,6 +25,7 @@ from fairseq.modules import (
     MultiheadAttention,
     SamePad,
     TransposeLast,
+    HierarchicalVarianceSegmentationLayer,
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import buffered_arange
@@ -298,6 +299,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             "--conv-bias", action="store_true", help="include bias in conv encoder"
         )
 
+        parser.add_argument(
+            "--segm", type=str, help="use segmentation on representations; 'var' (without ') for variance-based hierarchical segm"
+        )
+
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -397,6 +402,11 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             )
 
         self.final_proj = nn.Linear(args.encoder_embed_dim, final_dim)
+
+        if 'segm' in args:
+            self.segm = args.segm
+        else:
+            self.segm = None
 
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
@@ -541,7 +551,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
-        unmasked_features = features.clone()
+        # unmasked_features = features.clone() needed to move after segmentation
 
         if padding_mask is not None:
             assert padding_mask.size(1) == 1
@@ -553,7 +563,13 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             assert np.all(padding_mask.shape == features.shape[:-1])
 
         # TODO add here a function for segmentation (+command line params) and update mask
+        if self.segm:
+            features, padding_mask = self.segmentation(features, padding_mask)
 
+        unmasked_features = features.clone()
+
+        # doing it here as needed to clone features after segmentation and clone was before post_extract_proj 
+        # - [!] TODO check if this (cloning before post_extract_proj) is intended, looks very weird to me
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
@@ -649,6 +665,14 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             result["temp"] = curr_temp
 
         return result
+
+    def segmentation(self, features, padding_mask):
+        assert self.segm == 'var'  # for now only that supported, to be extended
+        non_padded = padding_mask.numel() - padding_mask.sum().item()
+        base_len_sum = non_padded / 3
+        min_segm = max(features.shape[0], int(round(0.85*base_len_sum)))
+        max_segm = min(non_padded, int(round(1.15*base_len_sum)))
+        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm))
 
     def quantize(self, x):
         assert self.quantizer is not None

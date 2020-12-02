@@ -57,4 +57,5 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   --dropout 0.1 --attention-dropout 0.1 --weight-decay 0.01 --max-tokens 10000 --max-update 400000 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d \
   --labels `#can be removed for no labels` \
+  `#--segm var  # optional segmentation` \ 
   --enable-padding # crashes without that, needs to make all lines same-size
