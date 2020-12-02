@@ -9,7 +9,7 @@ def variance(linearSum, squaresSum, size):
 
 
 # [!] lines has to be a numpy array, np.sum() crashes if done on tensor
-def hierarchicalVarianceSegmentation(lines, padMask=None, k=None):  # k is per line (total num of segments to be made is k*numLines)
+def hierarchicalVarianceSegmentation(lines, padMask=None, k=None):  # k is sum of number of segments for all lines
     
    # TODO check if tensor parts correctly taken etc. [!]
     segmentsDict = SegmentDict(lines, padMask=padMask)
@@ -35,7 +35,7 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None):  # k is per l
     varChanges = []
     merges = []
     
-    while len(q) and (k is None or segmentsDict.numSegments() > k * lines.shape[0]):
+    while len(q) and (k is None or segmentsDict.numSegments() > k):
     
         varChange, left, right = heappop(q)
         merged = segmentsDict.mergeSegments(left, right)  # checks if merge is valid
@@ -82,14 +82,15 @@ class HierarchicalVarianceSegmentationLayer(Function):
     # perhaps that ^ is not needed, and restore_shapes also
 
     @staticmethod
-    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None):  # k for strict num of segments, allowKsumRange for range OF SUM OF SEGMENTS IN ALL LINES and choosing 'best' split point
+    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None): 
+    # k for strict num of segments (SUM FOR ALL LINES), allowKsumRange for range OF SUM OF SEGMENTS IN ALL LINES and choosing 'best' split point
 
         assert k is None or allowKsumRange is None  # mutually exclusive options
 
         # TODO if input only 2-dim, add another dimension possibly (W x H -> 1 x W x H, consistent with B x W x H - later assuming that in some places)
 
-        wasInputOnGPU = inputGPU.is_cuda
-        wasPadMaskOnGPU = padMask.is_cuda if padMask is not None else False
+        inputDevice = inputGPU.device
+        padMaskInputDevice = padMask.device if padMask is not None else False
 
         # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
         input = inputGPU.detach().to('cpu').numpy()  
@@ -142,8 +143,8 @@ class HierarchicalVarianceSegmentationLayer(Function):
             line, begin, end = finalSegments[(line, idxInLine)]
             segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
 
-        resOutput = torch.tensor(segmented).to('cuda') if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
-        resPadMask = torch.BoolTensor(paddingMaskOut).to('cuda') if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
+        resOutput = torch.tensor(segmented).to(inputDevice)   #if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
+        resPadMask = torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice)   #if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
 
         #print("********************", dir(ctx))
         ctx.save_for_backward(padMask, resPadMask)
@@ -159,12 +160,16 @@ class HierarchicalVarianceSegmentationLayer(Function):
     @staticmethod
     def backward(ctx, dxThrough, outPadMask=None):  #, finalSegments=None, segmentNumsInLines=None):
 
+        dxThroughDevice = dxThrough.device
+
         paddingMask, paddingMaskOut = ctx.saved_tensors
-        dx = torch.empty(size=ctx.inputShape).fill_(0.)
+        dx = torch.empty(size=ctx.inputShape).fill_(0.).to('cpu')
 
         for line, idxInLine in ctx.finalSegments.keys():
             line, begin, end = ctx.finalSegments[(line, idxInLine)]
             dx[line][begin:(end+1)] = dxThrough[line][idxInLine] / (end - begin + 1)
+
+        dx = dx.to(dxThroughDevice)
 
         return dx, None, None, None
 
@@ -187,6 +192,18 @@ if __name__ == '__main__':
     print("-------------------------- torch ---------------------------")
     # (tensor, padMask, k, kSumRange)
     resOutput, resPadMask = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5))  #(2, 5))  # can;t have keyword args for torch Functions...
+    print(resOutput)
+    print(resPadMask)
+    #print(finalSegments)
+    #print(segmentNumsInLines)
+    #loss = Variable(resOutput, requires_grad=True)
+    resOutput.sum().backward()  # .backward() needs loss to be a number (tensor of size (1,))
+    print(tensor.grad)
+
+    print("-------------------------- torch2 ---------------------------")
+    # (tensor, padMask, k, kSumRange)
+    tensor.grad.data.zero_()
+    resOutput, resPadMask = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     #print(finalSegments)

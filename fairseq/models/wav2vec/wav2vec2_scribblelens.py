@@ -552,6 +552,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
 
+        # TODO add here a function for segmentation (+command line params) and update mask
+
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
