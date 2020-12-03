@@ -3,10 +3,16 @@ import numpy as np
 
 class SegmentDict:
     
-    def __init__(self, lines, padMask=None):  # lines assumed to be of shape [#lines x line_len * k]
+    def __init__(self, lines, padMask=None, minSegmsPerLine=None):  # lines assumed to be of shape [#lines x line_len * k]
         # (line#, place in line): (begin in line, end in line, sum(x), sum(x^2)) ; sums are possibly vectors
         self._dct = {(i, j): (j, j, lines[i][j], np.square(lines[i][j])) for i in range(len(lines)) for j in range(len(lines[i])) if padMask is None or not padMask[i][j]}
         self._size = len(self._dct)  # sometimes 1 (now all segments have 1 entry), sometimes later 2 entries per segment - better keep a counter
+
+        self._line_segms = [0 for i in range(lines.shape[0])]
+        for line, _ in self._dct:
+            self._line_segms[line] += 1
+
+        self.minSegmsPerLine = minSegmsPerLine
         
     # there is a 'segment' implicit format (tuple) used: (line#, leftIndex(begin), rightIndex(end))
         
@@ -31,12 +37,15 @@ class SegmentDict:
             wasThere = True
         if wasThere:
             self._size -= 1
+            self._line_segms[line] -= 1
             
     def mergeSegments(self, segment1, segment2):
         line1, left1, right1 = segment1
         line2, left2, right2 = segment2
         if not self.segmentInDict(segment1) or not self.segmentInDict(segment2) \
-           or line1 != line2 or right1 + 1 != left2:  # not subsequent
+           or line1 != line2 or right1 + 1 != left2 \
+           or (self.minSegmsPerLine and self._line_segms[line1] <= self.minSegmsPerLine):  
+           # not subsequent or too few segments in line
             return None
         linearSum1, squaresSum1 = self.getSegmentSums(segment1)
         linearSum2, squaresSum2 = self.getSegmentSums(segment2)
@@ -47,6 +56,7 @@ class SegmentDict:
         self._dct[(line1, left1)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
         self._dct[(line1, right2)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
         self._size += 1
+        self._line_segms[line1] += 1
         return (line1, left1, right2)
             
     def getSegments(self):

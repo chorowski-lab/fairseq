@@ -564,7 +564,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         # TODO add here a function for segmentation (+command line params) and update mask
         if self.segm:
-            features, padding_mask = self.segmentation(features, padding_mask)
+            features, padding_mask = self.segmentation(features, padding_mask, 5)  
+            # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
 
         unmasked_features = features.clone()
 
@@ -666,13 +667,13 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return result
 
-    def segmentation(self, features, padding_mask):
+    def segmentation(self, features, padding_mask, minSegmsPerLine):
         assert self.segm == 'var'  # for now only that supported, to be extended
         non_padded = padding_mask.numel() - padding_mask.sum().item()
         base_len_sum = non_padded / 3
         min_segm = max(features.shape[0], int(round(0.85*base_len_sum)))
         max_segm = min(non_padded, int(round(1.15*base_len_sum)))
-        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm))
+        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine)
 
     def quantize(self, x):
         assert self.quantizer is not None

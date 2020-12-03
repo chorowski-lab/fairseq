@@ -469,10 +469,11 @@ def compute_mask_indices(
 
         mask_idcs.append(np.unique(mask_idc[mask_idc < sz]))
 
-    min_len = min([len(m) for m in mask_idcs])
+    min_len = min([len(m) for m in mask_idcs])  
+    # [!] input sequence outside padding has to have appropriate length for this to work correctly 
+    # (e.g. length 1 with min_mask=2 can cause problems)
     for i, mask_idc in enumerate(mask_idcs):
-        if len(mask_idc) > min_len:  # TODO this check is incorrect and can lead to 0 masked elements with minimum masked set to > 0
-            # TODO 2 choosing indices to mask also seems incorrect, once got 0 chosen with minimum=2 (though there was only 1 unmasked in that line)
+        if len(mask_idc) > min_len:  # they want same number of masked stuff per line as a simplification
             mask_idc = np.random.choice(mask_idc, min_len, replace=False)
         mask[i, mask_idc] = True
 
