@@ -23,8 +23,9 @@ class SegmentDict:
         line, leftIdx, rightIdx = segment
         if (line, leftIdx) not in self._dct:
             return False
-        _, rightIdxFromDict, _, _ = self._dct[(line, leftIdx)]
-        return rightIdx == rightIdxFromDict  # left already checked by key
+        leftIdxFromDict, rightIdxFromDict, _, _ = self._dct[(line, leftIdx)]
+        return leftIdx == leftIdxFromDict and rightIdx == rightIdxFromDict  
+        # (line, leftIdx) in dct can be for right-range leftIdx with different leftIdxFromDict for merged segment
         
     def removeSegment(self, segment):
         line, leftIdx, rightIdx = segment
@@ -52,9 +53,14 @@ class SegmentDict:
         # remove old segments; will update _size
         self.removeSegment(segment1)
         self.removeSegment(segment2)
+        #assert (line1, left1) not in self._dct
+        #assert (line1, right1) not in self._dct
+        #assert (line1, left2) not in self._dct
+        #assert (line1, right2) not in self._dct
         # add a new merged one; need to update _size by hand
         self._dct[(line1, left1)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
         self._dct[(line1, right2)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
+        print(segment1, segment2, "->", (line1, left1, right2))
         self._size += 1
         self._line_segms[line1] += 1
         return (line1, left1, right2)
@@ -73,6 +79,9 @@ class SegmentDict:
         if (line, left - 1) not in self._dct:
             return None
         segmLeft, segmRight, _, _ = self._dct[(line, left - 1)]
+        print(left, right, "!", segmLeft, segmRight, left - 1)
+        #assert segmRight == left - 1
+        #assert self._dct[(line, segmLeft)][0] == segmLeft and self._dct[(line, segmLeft)][1] == segmRight
         return (line, segmLeft, segmRight)
     
     def getSegmentRight(self, segment):
@@ -82,6 +91,8 @@ class SegmentDict:
         if (line, right + 1) not in self._dct:
             return None
         segmLeft, segmRight, _, _ = self._dct[(line, right + 1)]
+        #assert segmLeft == right + 1
+        #assert self._dct[(line, segmRight)][0] == segmLeft and self._dct[(line, segmRight)][1] == segmRight
         return (line, segmLeft, segmRight)
     
     def getSegmentSums(self, segment):
