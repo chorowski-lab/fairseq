@@ -60,7 +60,7 @@ class SegmentDict:
         # add a new merged one; need to update _size by hand
         self._dct[(line1, left1)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
         self._dct[(line1, right2)] = (left1, right2, linearSum1 + linearSum2, squaresSum1 + squaresSum2)
-        print(segment1, segment2, "->", (line1, left1, right2))
+        #print(segment1, segment2, "->", (line1, left1, right2))
         self._size += 1
         self._line_segms[line1] += 1
         return (line1, left1, right2)
@@ -79,7 +79,7 @@ class SegmentDict:
         if (line, left - 1) not in self._dct:
             return None
         segmLeft, segmRight, _, _ = self._dct[(line, left - 1)]
-        print(left, right, "!", segmLeft, segmRight, left - 1)
+        #print(left, right, "!", segmLeft, segmRight, left - 1)
         #assert segmRight == left - 1
         #assert self._dct[(line, segmLeft)][0] == segmLeft and self._dct[(line, segmLeft)][1] == segmRight
         return (line, segmLeft, segmRight)
