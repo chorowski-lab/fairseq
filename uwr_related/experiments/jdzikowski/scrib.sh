@@ -1,5 +1,5 @@
 # [!] needs to be run from fairseq main folder
-RUN="smartpooling"
+RUN="smartpooling4"
 RUNDIR="/pio/scratch/1/i273233/runs"
 mkdir -p $RUNDIR/$RUN
 
@@ -27,4 +27,4 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d \
   --labels `#can be removed for no labels` \
   --enable-padding `# crashes without that, needs to make all lines same-size` \
-  --smartpooling --smartpooling-factor 3.0
+  --smartpooling --smartpooling-factor 3.0 --smartpooling-search-perc 0.3

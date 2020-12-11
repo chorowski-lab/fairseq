@@ -309,6 +309,13 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             help="factor by which the sequence's length will be reduced in smartpooling"
         )
 
+        parser.add_argument(
+            "--smartpooling-search-perc",
+            type=float,
+            default=0.3,
+            help="percentage of length of sequence after smartpooling to search for border. Ideally the border is located somewhere in +-search_perc"
+        )
+
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -324,6 +331,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         )
 
         self.smartpooling = args.smartpooling
+        self.smartpooling_search_perc = args.smartpooling_search_perc
         self.smartpooling_factor = args.smartpooling_factor
         self.smartpooling_filters = torch.tensor([[[[-1,1],[1,-1]]]]).float()
         self.post_extract_proj = (
@@ -545,15 +553,72 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         return logits
 
     def smartpool(self, features, padding_mask=None):
-        features_tmp = F.pad(features,(0,0,1,0))
-        new_lens = (features_tmp[:,1:,:] - features_tmp[:,:-1,:]).abs().sum(dim=2)
-        new_lens = new_lens / new_lens.sum(1, keepdim=True) * (features.size(1) / self.smartpooling_factor) # Reducing the original length T by some factor
-        
+        B,T,C = features.size()
+
+        padding_per_batch = (padding_mask > 0).sum(1)
+        total_T = padding_mask.numel() - padding_per_batch.sum()
+        features_together = torch.cat([features[i,:T-x] for i,x in enumerate(padding_per_batch)]).unsqueeze(0)
+
+        features_tmp = F.pad(features, (0,0,1,0), value=features_together.mean().item())
+        features_tmp = features_tmp.view(1, B * (T+1), C)
+
+        # We have to remove 1 front padding and X_i back paddings from each batch. X_i can be arbitrary
+        # but we have to append smartpooling_factors zeros so that there is one on the 
+        # border between batches in resulting reduced sequence 
+        # BATCH_1 000 BATCH_2 000 BATCH_3 -> REDUCED_1 0 REDUCED_2 0 REDUCED_3
+        new_lens = (features_tmp[:,1:,:] - features_tmp[:,:-1,:]).abs().sum(dim=2).squeeze(0)
+        new_lens = F.pad(new_lens, (1,0), value=0)
+        new_lens = torch.cat([torch.cat([new_lens[i*(T+1)+1:(i+1)*(T+1)-x], torch.zeros(int(self.smartpooling_factor), device=new_lens.device)]) for i,x in enumerate(padding_per_batch)]).unsqueeze(0)
+        new_lens = new_lens / new_lens.sum(1, keepdim=True) * ((total_T / self.smartpooling_factor) + B) # Reducing the original length T by some factor
+
+        features = torch.cat([torch.cat([features[i,:T-x], torch.zeros(int(self.smartpooling_factor), C, device=new_lens.device)]) for i,x in enumerate(padding_per_batch)]).unsqueeze(0)
         features, interp_weights = self.warp(features, new_lens)
-        if padding_mask is not None :
-            padding_mask = padding_mask.unsqueeze(2)
-            padding_mask = interp_weights @ padding_mask.float()
-            padding_mask = (padding_mask > 0).squeeze(2)
+        
+        # The idea is to remove B-1 the longest spanning intervals
+        # which contain several zeros we added earlier
+        def nonzero_interval_length(x, dim):
+            nonz = (x > 0)
+            _, low = ((nonz.cumsum(dim) == 1) & nonz).max(dim, keepdim=True)
+            rev_cumsum = nonz.long().flip(dim).cumsum(dim).flip(dim)
+            _, high = ((rev_cumsum == 1) & nonz).max(dim, keepdim=True)
+            
+            return high - low + 1
+        
+        # Get the indices to remove
+        lengths_nonzero = nonzero_interval_length(interp_weights, 2)
+        theor_lengths = ((T - padding_per_batch) // int(self.smartpooling_factor) + 1).view(-1)
+        theor_cumsum = theor_lengths.cumsum(0)
+        theor_lengths = (theor_lengths.float() * self.smartpooling_search_perc).long()
+        to_remove = torch.cat(
+            [torch.argmax(
+                lengths_nonzero[:, theor_cumsum[i] - theor_lengths[i] : theor_cumsum[i] + theor_lengths[i], :]).view(1) 
+                + theor_cumsum[i] - theor_lengths[i] for i in range(0,B-1)])
+        
+        indices = buffered_arange(lengths_nonzero.size(1))
+        indices = indices.to(lengths_nonzero.device)
+        to_remove = torch.cat([to_remove.view(-1), indices[-1].view(1)])
+
+        # Remove indices
+        mask = torch.ones_like(features, dtype=torch.bool, device=features.device).view(1, -1, C)
+        mask[0, to_remove, :] = False
+        features = features[mask].view(-1,C)
+
+        # Compute new features with padding
+        start_idx, _ = torch.sort(to_remove)
+        start_idx = start_idx - buffered_arange(B).to(features.device)
+        start_idx = F.pad(start_idx, [1,0])
+        sizes = start_idx[1:] - start_idx[:-1]
+        new_T = torch.max(sizes)
+        sizes = new_T - sizes
+
+        features = torch.cat([torch.cat([features[start_idx[i-1]:start_idx[i]], torch.zeros(sizes[i-1], C, device=features.device)]) for i in range(1,B+1)])
+        features = features.view(B, new_T, C)
+
+        # Compute new mask padding mask
+        if padding_mask is not None:
+            padding_mask = torch.zeros(B, new_T, dtype=torch.bool, device=features.device)
+            for i,x in enumerate(sizes):
+                padding_mask[i, new_T-x:] = True 
 
         return features, padding_mask
 
