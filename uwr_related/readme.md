@@ -42,6 +42,9 @@
     # Fetch part of librispeech
     wget http://www.openslr.org/resources/12/dev-clean.tar.gz
     tar zxvf dev-clean.tar.gz 
+    # for CTC (really needed?)
+    # wget http://www.openslr.org/resources/12/dev-other.tar.gz
+    # tar zxvf dev-other.tar.gz 
 
     # Fetch scribblelens
     mkdir scribblelens
@@ -87,10 +90,11 @@
             pip install -e .
             ```
         
-        2. Generate vocab for train split:
+        2. Download dictionary and generate vocab for train split:
 
             ```
-            python examples/wav2vec/libri_labels.py ../data/LibriSpeech/train.tsv --output-dir ../data/LibriSpeech --output-name train
+            wget https://dl.fbaipublicfiles.com/fairseq/wav2vec/dict.ltr.txt -P ../data/LibriSpeech
+            python examples/wav2vec/libri_labels.py ../data/LibriSpeech/valid.tsv --output-dir ../data/LibriSpeech --output-name valid
             ```
 
         3. Get pretrained language model (optional for audio - check `--w2l-decoder` flag in CTC evaluation script):
@@ -114,4 +118,6 @@
 
     - Scribblelens:
 
-        TODO
+        ```
+        python examples/wav2vec/scribble_labels.py --data-dir ../DistSup/data/ --output-dir ../DistSup/data/ --output-name test --vocab-dir ./fairseq/data/handwriting/tasman.alphabet.plus.space.mode5.json
+        ```

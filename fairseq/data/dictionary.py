@@ -201,7 +201,7 @@ class Dictionary(object):
         return self.unk_index
 
     @classmethod
-    def load(cls, f):
+    def load(cls, f, scribble=False):
         """Loads the dictionary from a text file with the format:
 
         ```
@@ -210,7 +210,15 @@ class Dictionary(object):
         ...
         ```
         """
-        d = cls()
+        if scribble:
+            d = cls(bos="{", 
+                    pad="~", 
+                    eos="}", 
+                    unk="@"
+                )
+        else:
+            d = cls()
+        # d = cls()
         d.add_from_file(f)
         return d
 
