@@ -73,7 +73,7 @@ class ScribblelensTask(LegacyFairseqTask):
             # type=bool,
             # default=None,
             #type=str,
-            # action="store_true",  
+            action="store_true",  
             help="if to return also labels from dataset" #"extension of the label file to load, if any",
         )
 
@@ -91,13 +91,14 @@ class ScribblelensTask(LegacyFairseqTask):
             args (argparse.Namespace): parsed command-line arguments
         """
 
-        if args.labels:
-            dict_path = os.path.join(args.data, f"dict.{args.labels}.txt")
-            target_dictionary = Dictionary.load(dict_path, scribble=True)
-        else:
-            target_dictionary = None
+        # if args.labels:
+        #     dict_path = os.path.join(args.data, f"dict.{args.labels}.txt")
+        #     target_dictionary = Dictionary.load(dict_path, scribble=True)
+        # else:
+        #     target_dictionary = None
 
-        return cls(args, target_dictionary=target_dictionary)
+        # return cls(args, target_dictionary=target_dictionary)
+        return cls(args)
 
     def load_dataset(self, split, **kwargs):
         """Load a given dataset split.
@@ -108,62 +109,62 @@ class ScribblelensTask(LegacyFairseqTask):
 
         vocab_path = self.args.vocab_path if self.args.vocab_path is not None else self.args.data + '/tasman.alphabet.plus.space.mode5.json'
 
-        self.datasets[split] = FileHandwritingDataset(
-            self.args.data,
-            vocab_path=vocab_path,
-            split=split,
-            max_sample_size=self.args.max_sample_size,
-            min_sample_size=self.args.max_sample_size,
-            pad_to_multiples_of=self.args.pad_to_multiples_of,
-            min_length=self.args.min_sample_size,
-            pad=self.args.labels is not None or self.args.enable_padding,
-            labels=self.args.labels,
-            normalize=self.args.normalize,
-        )
+        # self.datasets[split] = FileHandwritingDataset(
+        #     self.args.data,
+        #     vocab_path=vocab_path,
+        #     split=split,
+        #     max_sample_size=self.args.max_sample_size,
+        #     min_sample_size=self.args.max_sample_size,
+        #     pad_to_multiples_of=self.args.pad_to_multiples_of,
+        #     min_length=self.args.min_sample_size,
+        #     pad=self.args.labels is not None or self.args.enable_padding,
+        #     labels=self.args.labels,
+        #     normalize=self.args.normalize,
+        # )
 
-        # if not self.args.labels:
-        #     self.datasets[split] = FileHandwritingDataset(
-        #         self.args.data,
-        #         vocab_path=vocab_path,
-        #         split=split,
-        #         max_sample_size=self.args.max_sample_size,
-        #         min_sample_size=self.args.max_sample_size,
-        #         pad_to_multiples_of=self.args.pad_to_multiples_of,
-        #         min_length=self.args.min_sample_size,
-        #         pad=self.args.labels is not None or self.args.enable_padding,
+        if not self.args.labels:
+            self.datasets[split] = FileHandwritingDataset(
+                self.args.data,
+                vocab_path=vocab_path,
+                split=split,
+                max_sample_size=self.args.max_sample_size,
+                min_sample_size=self.args.max_sample_size,
+                pad_to_multiples_of=self.args.pad_to_multiples_of,
+                min_length=self.args.min_sample_size,
+                pad=self.args.labels is not None or self.args.enable_padding,
                 
-        #         normalize=self.args.normalize,
-        #     )
+                normalize=self.args.normalize,
+            )
 
-        # else:
+        else:
 
             # https://github.com/pytorch/fairseq/blob/master/examples/wav2vec/README.md#fine-tune-a-pre-trained-model-with-ctc
             # fairseq/examples/wav2vec/libri_labels.py   - some example of labels for librispeech, how it worked with commented out code
 
-            #dict_path = FileHandwritingDataset.vocabularyPath(self.args.data)  #os.path.join(self.args.data, f"dict.{self.args.labels}.txt")
-            # self._target_dictionary = HandwritingDictionary(vocab_path)  #Dictionary.load(dict_path)  
+            # dict_path = FileHandwritingDataset.vocabularyPath(self.args.data)  #os.path.join(self.args.data, f"dict.{self.args.labels}.txt")
+            self._target_dictionary = HandwritingDictionary(vocab_path)  #Dictionary.load(dict_path)  
 
-            # # label_path = os.path.join(self.args.data, f"{split}.{self.args.labels}")  # generated an example how this looks like
-            # # labels = []
-            # # with open(label_path, "r") as f:
-            # #     for line in f:
-            # #         labels.append(line)
+            # label_path = os.path.join(self.args.data, f"{split}.{self.args.labels}")  # generated an example how this looks like
+            # labels = []
+            # with open(label_path, "r") as f:
+            #     for line in f:
+            #         labels.append(line)
 
-            # # process_label = LabelEncoder(self.target_dictionary)  // now encoded from the start (but text also available)
+            # process_label = LabelEncoder(self.target_dictionary)  // now encoded from the start (but text also available)
 
-            # self.datasets[split] = FileHandwritingDataset(
-            #     self.args.data,
-            #     vocab_path=vocab_path,
-            #     split=split,
-            #     max_sample_size=self.args.max_sample_size,
-            #     min_sample_size=self.args.max_sample_size,
-            #     pad_to_multiples_of=self.args.pad_to_multiples_of,
-            #     min_length=self.args.min_sample_size,
-            #     pad=self.args.labels is not None or self.args.enable_padding,
+            self.datasets[split] = FileHandwritingDataset(
+                self.args.data,
+                vocab_path=vocab_path,
+                split=split,
+                max_sample_size=self.args.max_sample_size,
+                min_sample_size=self.args.max_sample_size,
+                pad_to_multiples_of=self.args.pad_to_multiples_of,
+                min_length=self.args.min_sample_size,
+                pad=self.args.labels is not None or self.args.enable_padding,
                 
-            #     normalize=self.args.normalize,
-            #     labels=True,
-            # )
+                normalize=self.args.normalize,
+                labels=True,
+            )
             
             # AddTargetDataset(
             #     self.datasets[split],

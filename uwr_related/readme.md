@@ -119,5 +119,5 @@
     - Scribblelens:
 
         ```
-        python examples/wav2vec/scribble_labels.py --data-dir ../DistSup/data/ --output-dir ../DistSup/data/ --output-name test --vocab-dir ./fairseq/data/handwriting/tasman.alphabet.plus.space.mode5.json
+        bash uwr_related/ctc_fine_tune_scribble.sh
         ```

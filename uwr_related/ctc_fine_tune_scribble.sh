@@ -7,8 +7,7 @@ python train.py --distributed-world-size 1 ../DistSup/data \
     --post-process letter --valid-subset test --pad-to-multiples-of 4 \
     --no-epoch-checkpoints --best-checkpoint-metric wer --num-workers 0 \
     --max-update 80000 --sentence-avg --task scribblelens --arch wav2vec_ctc \
-    --w2v-path ../try_sl1/checkpoint_last.pt \
-    --labels ltr \
+    --w2v-path ../try_sl1/checkpoint_last.pt --labels \
     --apply-mask --mask-selection static --mask-other 0 --mask-length 10 --mask-prob 0.5 --layerdrop 0.1 \
     --mask-channel-selection static --mask-channel-other 0 --mask-channel-length 64 --mask-channel-prob 0.5 --zero-infinity \
     --feature-grad-mult 0.0 --freeze-finetune-updates 10000 --validate-after-updates 10000 --optimizer adam \
