@@ -30,6 +30,9 @@ from fairseq.modules import (
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import buffered_arange
 
+import random
+from PIL import Image, ImageDraw
+
 @register_model("wav2vec2_scribblelens")
 class Wav2Vec2ModelSL(BaseFairseqModel):
     @staticmethod
@@ -303,6 +306,14 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             "--segm", type=str, help="use segmentation on representations; 'var' (without ') for variance-based hierarchical segm"
         )
 
+        parser.add_argument(
+            "--random-segm-log-dir", type=str, help="where to log randomly chosen segmentation images"
+        )
+
+        parser.add_argument(
+            "--random-segm-log-freq", type=float, help="how frequently (pbb) to log randomly chosen segmentation images"
+        )
+
     def __init__(self, args):
         super().__init__()
         self.args = args
@@ -405,8 +416,16 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         if 'segm' in args:
             self.segm = args.segm
+            if 'random_segm_log_dir' in args:
+                self.random_segm_log_dir = args.random_segm_log_dir
+                self.random_segm_log_freq = args.random_segm_log_freq
+            else:
+                self.random_segm_log_dir = None
+                self.random_segm_log_freq = None
         else:
             self.segm = None
+            self.random_segm_log_dir = None
+            self.random_segm_log_freq = None
 
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
@@ -556,16 +575,30 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         if padding_mask is not None:
             assert padding_mask.size(1) == 1
             padding_mask = padding_mask.squeeze(1)
+            scale_float = float(padding_mask.size(1)) / features.size(1) 
             scale = padding_mask.size(1) // features.size(1)
             extra = padding_mask.size(1) % features.size(1) # should be 0 since 1st CNN reduces number of features [scale] times (due to the architecture choice)
             assert extra == 0
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
+        else:
+            scale_float = float(source.size(1)) / features.size(1)
 
         # TODO add here a function for segmentation (+command line params) and update mask
         if self.segm:
-            features, padding_mask = self.segmentation(features, padding_mask, 5)  
+            features, padding_mask, segment_borders = self.segmentation(features, padding_mask, 5)  
             # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
+
+            if self.random_segm_log_freq is not None and random.random() < self.random_segm_log_freq:
+                img = Image.fromarray(np.array(source[0]*255., dtype=np.int32)).convert('RGB')
+                borders_here = segment_borders[0]
+                draw = ImageDraw.Draw(img)
+                for i in range(len(borders_here)):
+                    if borders_here[i] != 0:
+                        print("!", source[0].shape, i*scale_float)
+                        draw.line([(round(i*scale_float), 0), (i*round(scale_float), 31)], fill='red', width=3)
+                img.save(self.random_segm_log_dir + "/" + str(int(random.random() * 100000)) + ".png")
+            # TODO sample ang plot with added segm lines; will perhaps need to return something non-tensor, how to do it in pytorch?
 
         unmasked_features = features.clone()
 
@@ -673,7 +706,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         base_len_sum = non_padded / 3
         min_segm = max(features.shape[0], int(round(0.85*base_len_sum)))
         max_segm = min(non_padded, int(round(1.15*base_len_sum)))
-        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine)
+        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine)
 
     def quantize(self, x):
         assert self.quantizer is not None

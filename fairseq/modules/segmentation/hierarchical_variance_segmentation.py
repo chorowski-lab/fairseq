@@ -8,8 +8,11 @@ from torch.autograd import Function, Variable
 def variance(linearSum, squaresSum, size):
     return np.sum((squaresSum / size) - np.square(linearSum / size))  # sum of "variance vector"
 
+def mse(linearSum, squaresSum, size=None):  # size is ignored, TODO remove from signature
+    return np.sum(squaresSum - np.square(linearSum))  # sum of "mse vector"
 
 # [!] lines has to be a numpy array, np.sum() crashes if done on tensor
+# TODO actually now uses mse, as variance but not scaled with length; maybe add arg for that (?)
 def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLine=None):  # k is sum of number of segments for all lines
     
    # TODO check if tensor parts correctly taken etc. [!]
@@ -28,9 +31,9 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLin
             linSum2, sqSum2 = segmentsDict.getSegmentSums(segmRight)
             line1, left1, right1 = segm
             line2, left2, right2 = segmRight
-            oldVar1 = variance(linSum1, sqSum1, right1 - left1 + 1)
-            oldVar2 = variance(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = variance(linSum1 + linSum2, sqSum1 + sqSum2, right2 - left1 + 1)
+            oldVar1 = mse(linSum1, sqSum1, right1 - left1 + 1)
+            oldVar2 = mse(linSum2, sqSum2, right2 - left2 + 1)
+            mergedVariance = mse(linSum1 + linSum2, sqSum1 + sqSum2, right2 - left1 + 1)
             heappush(q, (mergedVariance - oldVar1 - oldVar2, segm, segmRight))
        
     varChanges = []
@@ -51,20 +54,20 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLin
         toRight = segmentsDict.getSegmentRight(merged)
         linSumMerged, sqSumMerged = segmentsDict.getSegmentSums(merged)
         lineMerged, leftMerged, rightMerged = merged
-        varMerged = variance(linSumMerged, sqSumMerged, rightMerged - leftMerged + 1)
+        varMerged = mse(linSumMerged, sqSumMerged, rightMerged - leftMerged + 1)
         
         if toLeft is not None:
             linSum2, sqSum2 = segmentsDict.getSegmentSums(toLeft)
             line2, left2, right2 = toLeft
-            oldVar2 = variance(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = variance(linSumMerged + linSum2, sqSumMerged + sqSum2, rightMerged - left2 + 1)
+            oldVar2 = mse(linSum2, sqSum2, right2 - left2 + 1)
+            mergedVariance = mse(linSumMerged + linSum2, sqSumMerged + sqSum2, rightMerged - left2 + 1)
             heappush(q, (mergedVariance - varMerged - oldVar2, toLeft, merged))
             
         if toRight is not None:
             linSum2, sqSum2 = segmentsDict.getSegmentSums(toRight)
             line2, left2, right2 = toRight
-            oldVar2 = variance(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = variance(linSumMerged + linSum2, sqSumMerged + sqSum2, right2 - leftMerged + 1)
+            oldVar2 = mse(linSum2, sqSum2, right2 - left2 + 1)
+            mergedVariance = mse(linSumMerged + linSum2, sqSumMerged + sqSum2, right2 - leftMerged + 1)
             heappush(q, (mergedVariance - varMerged - oldVar2, merged, toRight))
             
     return varChanges, merges, segmentsDict
@@ -142,15 +145,20 @@ class HierarchicalVarianceSegmentationLayer(Function):
             paddingMaskOut[i][n:] = True
         
         segmented = np.full((input.shape[0], maxSegments, input.shape[2]), 0.)  #torch.tensor(size=(input.shape[0], maxSegments, input.shape[2])).fill_(0.)
+        # can perhaps return a tensor with 1 at the beginning of the segments, -1 at the end, 0s elsewhere
+        segmentBorders = np.zeros((input.shape[0], input.shape[1]), dtype=np.int8)
         for line, idxInLine in finalSegments.keys():
             line, begin, end = finalSegments[(line, idxInLine)]
             segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
+            segmentBorders[line][begin] = 1
+            segmentBorders[line][end] = -1  # [!] can be e.g. [...0, 0, -1, -1, ...] with segment of length 1
 
         resOutput = torch.tensor(segmented, dtype=inputGPU.dtype).to(inputDevice)   #if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
         resPadMask = torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice)   #if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
+        segmentBorders = torch.IntTensor(segmentBorders).to(inputDevice)
 
         #print("********************", dir(ctx))
-        ctx.save_for_backward(padMask, resPadMask)
+        #[not really needed] ctx.save_for_backward(padMask, resPadMask)
         # save_for_backward is only for tensors / variables / stuff
         ctx.finalSegments = finalSegments
         ctx.segmentNumsInLines = segmentNumsInLines
@@ -158,14 +166,15 @@ class HierarchicalVarianceSegmentationLayer(Function):
         ctx.mark_non_differentiable(resPadMask)  # can only pass torch variables here and only that makes sense
 
         #print("FINAL SEGMENTS: ", finalSegments, segmentNumsInLines)
-        return resOutput, resPadMask  #, finalSegments, segmentNumsInLines can only return torch variables... TODO maybe check how to fetch this info, but not sure if needed
+
+        return resOutput, resPadMask, segmentBorders  #, finalSegments, segmentNumsInLines can only return torch variables... TODO maybe check how to fetch this info, but not sure if needed
 
     @staticmethod
-    def backward(ctx, dxThrough, outPadMask=None):  #, finalSegments=None, segmentNumsInLines=None):
+    def backward(ctx, dxThrough, outPadMask=None, segmentBorders=None):  #, finalSegments=None, segmentNumsInLines=None):
 
         dxThroughDevice = dxThrough.device
 
-        paddingMask, paddingMaskOut = ctx.saved_tensors
+        #[not really needed] paddingMask, paddingMaskOut = ctx.saved_tensors
         dx = torch.empty(size=ctx.inputShape, dtype=dxThrough.dtype).fill_(0.).to('cpu')
 
         for line, idxInLine in ctx.finalSegments.keys():
@@ -192,9 +201,10 @@ if __name__ == '__main__':
 
     print("-------------------------- torch ---------------------------")
     # (tensor, padMask, k, kSumRange)
-    resOutput, resPadMask = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None)  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
+    print(borders)
     #print(finalSegments)
     #print(segmentNumsInLines)
     #loss = Variable(resOutput, requires_grad=True)
@@ -204,9 +214,10 @@ if __name__ == '__main__':
     print("-------------------------- torch2 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None)  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
+    print(borders)
     #print(finalSegments)
     #print(segmentNumsInLines)
     #loss = Variable(resOutput, requires_grad=True)
@@ -216,9 +227,10 @@ if __name__ == '__main__':
     print("-------------------------- torch3 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2)  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
+    print(borders)
     # [!] here will return 4 segments instead of specified 3, because of specified minSegmsPerLine
 
     resOutput.sum().backward()  # .backward() needs loss to be a number (tensor of size (1,))
