@@ -14,11 +14,12 @@ from fairseq.logging.meters import safe_round
 
 @register_criterion("wav2vec")
 class Wav2vecCriterion(FairseqCriterion):
-    def __init__(self, task, infonce=False, loss_weights=None, log_keys=None):
+    def __init__(self, task, infonce=False, loss_weights=None, log_keys=None, pass_metadata=False):
         super().__init__(task)
         self.infonce = infonce
         self.loss_weights = None if loss_weights is None else eval(loss_weights)
         self.log_keys = [] if log_keys is None else eval(log_keys)
+        self.pass_metadata = pass_metadata
 
     @staticmethod
     def add_args(parser):
@@ -30,6 +31,8 @@ class Wav2vecCriterion(FairseqCriterion):
                             help='weights for additional loss terms (not first one)')
         parser.add_argument('--log-keys', type=str, default=None,
                             help='output keys to log')
+        parser.add_argument('--pass-metadata', action='store_true',
+                            help='if set, passes sample ids and epoch nr to the model (for model-specific logging of some specific-id examples per epoch etc.)')
         # fmt: on
 
     def forward(self, model, sample, reduce=True, log_pred=False):
@@ -40,7 +43,10 @@ class Wav2vecCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        net_output = model(**sample["net_input"])
+        if self.pass_metadata:
+            net_output = model(**sample["net_input"], id=sample["id"], epoch=sample["epoch"])
+        else:
+            net_output = model(**sample["net_input"])
         logits = model.get_logits(net_output).float()
         target = model.get_targets(sample, net_output)
 

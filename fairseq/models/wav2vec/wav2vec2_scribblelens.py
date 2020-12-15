@@ -307,11 +307,16 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         )
 
         parser.add_argument(
-            "--random-segm-log-dir", type=str, help="where to log randomly chosen segmentation images"
+            "--segm-log-dir", type=str, help="where to log randomly chosen segmentation images; also serves as 'do log' flag"
         )
 
         parser.add_argument(
             "--random-segm-log-freq", type=float, help="how frequently (pbb) to log randomly chosen segmentation images"
+        )
+
+        parser.add_argument(
+            "--segm-log-ids", type=str, help="what ids to log, format: <operator>:arg1,<operator>:arg1:arg2,... without spaces, " \
+            + "operator can be =(id) [=:id] or %(X, id) [%:1000:0], meaning exact id or ids of that modulo X"
         )
 
     def __init__(self, args):
@@ -416,15 +421,32 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         if 'segm' in args:
             self.segm = args.segm
-            if 'random_segm_log_dir' in args:
-                self.random_segm_log_dir = args.random_segm_log_dir
-                self.random_segm_log_freq = args.random_segm_log_freq
+            if 'segm_log_dir' in args:
+                self.segm_log_dir = args.segm_log_dir
+                self.random_segm_log_freq = args.random_segm_log_freq if 'random_segm_log_freq' in args else None
+                if 'segm_log_ids' in args:
+                    options = args.segm_log_ids.split(",")
+                    self.segm_log_ids = []
+                    for opt in options:
+                        details = opt.split(':')
+                        if details[0] == "%":
+                            # need to bind details like that, because otherwise details variable will be bound to some random thing
+                            # that was used later and was also named details; 
+                            # imo one of the nastiest things in python, 
+                            # as scope in python is "until end of function" and not "until the end of the function or sth"
+                            self.segm_log_ids.append((lambda details: (lambda x: x % int(details[1]) == int(details[2])))(details))
+                        elif details[0] == '=':
+                            self.segm_log_ids.append((lambda details: (lambda x: x == int(details[1])))(details))
+                        else:
+                            assert False
+                else:
+                    self.segm_log_ids = None
             else:
-                self.random_segm_log_dir = None
+                self.segm_log_dir = None
                 self.random_segm_log_freq = None
         else:
             self.segm = None
-            self.random_segm_log_dir = None
+            self.segm_log_dir = None
             self.random_segm_log_freq = None
 
     def upgrade_state_dict_named(self, state_dict, name):
@@ -554,7 +576,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         return logits
 
-    def forward(self, source, padding_mask=None, mask=True, features_only=False):
+    def forward(self, source, padding_mask=None, mask=True, features_only=False, id=None, epoch=None):
         # padding_mask = None  # JCh: padding_mask prob need to be True where the data is padded. mask=True => data invalid
 
         if self.feature_grad_mult > 0:
@@ -589,16 +611,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             features, padding_mask, segment_borders = self.segmentation(features, padding_mask, 5)  
             # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
 
-            if self.random_segm_log_freq is not None and random.random() < self.random_segm_log_freq:
-                img = Image.fromarray(np.array(source[0]*255., dtype=np.int32)).convert('RGB')
-                borders_here = segment_borders[0]
-                draw = ImageDraw.Draw(img)
-                for i in range(len(borders_here)):
-                    if borders_here[i] != 0:
-                        print("!", source[0].shape, i*scale_float)
-                        draw.line([(round(i*scale_float), 0), (i*round(scale_float), 31)], fill='red', width=3)
-                img.save(self.random_segm_log_dir + "/" + str(int(random.random() * 100000)) + ".png")
-            # TODO sample ang plot with added segm lines; will perhaps need to return something non-tensor, how to do it in pytorch?
+            if self.segm_log_dir:
+                for i in range(source.shape[0]):
+                    self.check_if_and_log_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() != 0], id=id[i] if id is not None else None, epoch=epoch)
+
 
         unmasked_features = features.clone()
 
@@ -707,6 +723,37 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         min_segm = max(features.shape[0], int(round(0.85*base_len_sum)))
         max_segm = min(non_padded, int(round(1.15*base_len_sum)))
         return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine)
+
+    def log_segmented_image(self, img, borders, name=None, convert_numbers_from_01=True):
+        converted_grayscale_img = img*255. if convert_numbers_from_01 else img
+        img = Image.fromarray(np.array(converted_grayscale_img, dtype=np.int32)).convert('RGB')
+        draw = ImageDraw.Draw(img)
+        for border in borders:
+            #if borders[i] != 0:
+            #print("!", source[0].shape, i*scale_float)
+            draw.line([(border, 0), (border, 31)], fill='red', width=3)
+        save_name = name if name is not None else "<random_name_" + str(int(random.random() * 10000000)) + ">"
+        img.save(self.segm_log_dir + "/" + save_name + ".png")
+
+    def check_if_and_log_segmented_image(self, img, borders, id=None, epoch=None):
+        name = "id_" + str(id) + "_epoch_" + str(epoch) if id is not None else None  # will have names with id, possibly overwriting each epoch, otherwise random ids
+        if self.random_segm_log_freq is not None:
+            if random.random() < self.random_segm_log_freq:
+                self.log_segmented_image(img, borders, name=name, convert_numbers_from_01=True)
+                # img = Image.fromarray(np.array(source[0]*255., dtype=np.int32)).convert('RGB')
+                # borders_here = segment_borders[0]
+                # draw = ImageDraw.Draw(img)
+                # for i in range(len(borders_here)):
+                #     if borders_here[i] != 0:
+                #         print("!", source[0].shape, i*scale_float)
+                #         draw.line([(round(i*scale_float), 0), (i*round(scale_float), 31)], fill='red', width=3)
+                # img.save(self.segm_log_dir + "/" + str(int(random.random() * 100000)) + ".png")
+        if self.segm_log_ids is not None:
+            assert id is not None  # need to use pass-metadata arg in criterion (if wav2vec, if other need to add this option)
+            for segm_log_rule in self.segm_log_ids:
+                if segm_log_rule(id):  # check if fits
+                    self.log_segmented_image(img, borders, name=name, convert_numbers_from_01=True)
+                    break
 
     def quantize(self, x):
         assert self.quantizer is not None

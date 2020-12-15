@@ -41,7 +41,7 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   /pio/scratch/1/i283340/MGR/NewSetup/DistSup/data `#path to Scribblelens data folder` \
   --vocab-path ./fairseq/data/handwriting/tasman.alphabet.plus.space.mode5.json `#alphabet file` \
   --save-dir ../try_sl1 --num-workers 0 \
-  --task scribblelens --criterion wav2vec --arch wav2vec2_scribblelens \
+  --task scribblelens --criterion wav2vec `#--pass-metadata` --arch wav2vec2_scribblelens \
   --valid-subset test --pad-to-multiples-of 4 `#--max-sample-size 256` \
   --log-keys '["prob_perplexity","code_perplexity","temp"]' --quantize-targets --extractor-mode default \
   --conv-feature-layers '[(64, (3, 3), (1, 2), (1, 1)), (128, (5, 5), (2, 2), (2, 2)), (256, (3,3), (1, 1), (1, 1)), (256, (3,3), (1, 2), (1, 1)), (512, (3,3), (1, 1), (1, 1)), (512, (3,3), (1, 2), (1, 1)), (512, (3,2), (2, 1), (1, 0))]' \
@@ -57,5 +57,6 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   --dropout 0.1 --attention-dropout 0.1 --weight-decay 0.01 --max-tokens 10000 --max-update 400000 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d \
   --labels `#can be removed for no labels` \
+  `#--segm-log-dir ../imgs3 --random-segm-log-freq 0.0001 --segm-log-ids =:715,%:1000:123` \
   `#--segm var  # optional segmentation` \ 
   --enable-padding # crashes without that, needs to make all lines same-size
