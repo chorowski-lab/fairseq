@@ -935,6 +935,10 @@ class Trainer(object):
                         sample["target"], device=self.last_device
                     )
             else:
+                # v needed if non-tensor stuff in sample (e.g. metadata), but kept tensors for safety
+                # for key in sample:
+                #     if torch.is_tensor(key):
+                #         sample[key] = utils.move_to_cuda(sample[key])
                 sample = utils.move_to_cuda(sample)
 
         def apply_half(t):

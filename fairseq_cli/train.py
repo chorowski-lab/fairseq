@@ -214,7 +214,7 @@ def train(
     num_updates = trainer.get_num_updates()
     for i, samples in enumerate(progress):
         for sample in samples:
-            sample["epoch"] = epoch_itr.epoch
+            sample["epoch"] = torch.tensor(epoch_itr.epoch, dtype=torch.int16)
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
             "train_step-%d" % i
         ):
@@ -354,6 +354,7 @@ def validate(
         # don't pollute other aggregators (e.g., train meters)
         with metrics.aggregate(new_root=True) as agg:
             for sample in progress:
+                sample["epoch"] = torch.tensor(epoch_itr.epoch, dtype=torch.int16)
                 trainer.valid_step(sample)
 
         # log validation stats

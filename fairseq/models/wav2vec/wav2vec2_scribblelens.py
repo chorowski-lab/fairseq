@@ -613,7 +613,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
             if self.segm_log_dir:
                 for i in range(source.shape[0]):
-                    self.check_if_and_log_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() != 0], id=id[i] if id is not None else None, epoch=epoch)
+                    self.check_if_and_log_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() != 0], id=id[i].item() if id is not None else None, epoch=epoch)
 
 
         unmasked_features = features.clone()
@@ -726,7 +726,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
     def log_segmented_image(self, img, borders, name=None, convert_numbers_from_01=True):
         converted_grayscale_img = img*255. if convert_numbers_from_01 else img
-        img = Image.fromarray(np.array(converted_grayscale_img, dtype=np.int32)).convert('RGB')
+        img = Image.fromarray(np.array(converted_grayscale_img.cpu(), dtype=np.int32)).convert('RGB')
         draw = ImageDraw.Draw(img)
         for border in borders:
             #if borders[i] != 0:

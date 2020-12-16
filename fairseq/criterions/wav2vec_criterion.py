@@ -44,7 +44,10 @@ class Wav2vecCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         if self.pass_metadata:
-            net_output = model(**sample["net_input"], id=sample["id"], epoch=sample["epoch"])
+            # epoch is now also be passed in validation, but better be careful
+            net_output = model(**sample["net_input"], \
+                               id=sample["id"], \
+                               epoch=sample["epoch"].item() if "epoch" in sample else None)
         else:
             net_output = model(**sample["net_input"])
         logits = model.get_logits(net_output).float()
