@@ -303,7 +303,9 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         )
 
         parser.add_argument(
-            "--segm", type=str, help="use segmentation on representations; 'var' (without ') for variance-based hierarchical segm"
+            "--segm", type=str, help="use segmentation on representations; 'var' (without ') for variance-based hierarchical segm; " \
+                + "also contains options, e.g. for var format is var:<segment_cost>:<batchavg_segment_nr_per_line>, where <segment_cost> is se or var, " \
+                + "and <batchavg_segment_nr_reduction_per_line> is/are float/floats of format <avg_reduction> or <min_avg_reduction>-<max_avg_reduction>"
         )
 
         parser.add_argument(
@@ -419,8 +421,26 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         self.final_proj = nn.Linear(args.encoder_embed_dim, final_dim)
 
+        # part for supported segmentation options
         if 'segm' in args:
-            self.segm = args.segm
+            segm_opts = args.segm.split(":")
+            # this part needs to set stuff needed by 'segmentation' method
+            if segm_opts[0] == "var":  # TODO maybe change name to hierarchical or so
+                self.segm = "var"
+                assert len(segm_opts) == 3
+                self.var_segm_merge_priority = segm_opts[1]
+                length_reduction_options = list(map(float, segm_opts[2].split("-")))
+                if len(length_reduction_options) == 1:
+                    self.var_segm_strict_reduction = length_reduction_options[0]
+                    self.var_segm_reduction_range = None
+                elif len(length_reduction_options) == 2:
+                    self.var_segm_strict_reduction = None
+                    assert length_reduction_options[0] <= length_reduction_options[1]
+                    self.var_segm_reduction_range = tuple(length_reduction_options)
+                else:
+                    assert False
+            else:
+                assert False  # for now only that supported
             if 'segm_log_dir' in args:
                 self.segm_log_dir = args.segm_log_dir
                 self.random_segm_log_freq = args.random_segm_log_freq if 'random_segm_log_freq' in args else None
@@ -613,7 +633,9 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
             if self.segm_log_dir:
                 for i in range(source.shape[0]):
-                    self.check_if_and_log_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() != 0], id=id[i].item() if id is not None else None, epoch=epoch)
+                    # changed segment lines to only log begins (1 is there now for every segment, -1 if length > 1)
+                    # as can just mult by scale for begins, for ends would need to also add scale - 1
+                    self.check_if_and_log_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() == -1], id=id[i].item() if id is not None else None, epoch=epoch)
 
 
         unmasked_features = features.clone()
@@ -719,10 +741,14 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
     def segmentation(self, features, padding_mask, minSegmsPerLine):
         assert self.segm == 'var'  # for now only that supported, to be extended
         non_padded = padding_mask.numel() - padding_mask.sum().item()
-        base_len_sum = non_padded / 3
-        min_segm = max(features.shape[0], int(round(0.85*base_len_sum)))
-        max_segm = min(non_padded, int(round(1.15*base_len_sum)))
-        return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine)
+        if self.var_segm_strict_reduction is not None:
+            base_len_sum = int(round(non_padded / self.var_segm_strict_reduction))
+            return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine, self.var_segm_merge_priority)
+        else:
+            min_reduction, max_reduction = self.var_segm_reduction_range
+            min_segm = base_len_sum = int(round(non_padded / max_reduction))  #max(features.shape[0], int(round(0.85*base_len_sum)))
+            max_segm = base_len_sum = int(round(non_padded / min_reduction))  #min(non_padded, int(round(1.15*base_len_sum)))
+            return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine, self.var_segm_merge_priority)
 
     def log_segmented_image(self, img, borders, name=None, convert_numbers_from_01=True):
         converted_grayscale_img = img*255. if convert_numbers_from_01 else img
@@ -731,7 +757,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         for border in borders:
             #if borders[i] != 0:
             #print("!", source[0].shape, i*scale_float)
-            draw.line([(border, 0), (border, 31)], fill='red', width=3)
+            draw.line([(border, 0), (border, 31)], fill='red', width=2)
         save_name = name if name is not None else "<random_name_" + str(int(random.random() * 10000000)) + ">"
         img.save(self.segm_log_dir + "/" + save_name + ".png")
 

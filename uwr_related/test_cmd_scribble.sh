@@ -58,5 +58,5 @@ python train.py --distributed-world-size 1 --update-freq 2 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d \
   --labels `#can be removed for no labels` \
   `#--segm-log-dir ../imgs3 --random-segm-log-freq 0.0001 --segm-log-ids =:715,%:1000:123` \
-  `#--segm var  # optional segmentation` \ 
+  `#--segm var:se:2.5-3.5  # optional segmentation` \ 
   --enable-padding # crashes without that, needs to make all lines same-size
