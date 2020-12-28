@@ -324,7 +324,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         )
 
         parser.add_argument(
-            "--repr-log-dir", type=str, help="where to log chosen representation data and raw input images; also serves as 'do log' flag"
+            "--repr-data-log-dir", type=str, help="where to log chosen array data (representation data, raw input images, and segment borders if segmentation); also serves as 'do log' flag"
         )
 
         
@@ -477,12 +477,12 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             self.segm = None
             self.segm_log_dir = None
 
-        if 'repr_log_dir' in args:
-            self.repr_log_dir = args.repr_log_dir
+        if 'repr_data_log_dir' in args:
+            self.repr_data_log_dir = args.repr_data_log_dir
         else:
-            self.repr_log_dir = None
+            self.repr_data_log_dir = None
 
-        self.need_logging = self.segm_log_dir is not None or self.repr_log_dir is not None
+        self.need_logging = self.segm_log_dir is not None or self.repr_data_log_dir is not None
 
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)
@@ -641,6 +641,15 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         else:
             scale_float = float(source.size(1)) / features.size(1)
 
+        # TODO maybe move logging segments images to a script also and here just log borders array? or option both here and as a script potentially
+        if self.need_logging:
+            for i in range(source.shape[0]):
+                if self.check_if_log_for_id(id=id[i].item()):
+                    if self.repr_data_log_dir:
+                        self.log_repr_nonsegmentation_data(source[i], features[i], id=id[i].item() if id is not None else None, epoch=epoch)
+                        # [!] logging here, before projection as this is what representation segmentation uses 
+                        # - TODO would otherwise need to change unmasked_features = features.clone() to be after projection instead of before
+
         if self.segm:
             features, padding_mask, segment_borders = self.segmentation(features, padding_mask, 5)  
             # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
@@ -652,9 +661,9 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                         assert self.segm
                         # changed segment lines to only log begins (1 is there now for every segment, -1 if length > 1)
                         # as can just mult by scale for begins, for ends would need to also add scale - 1
-                        self.log_named_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() == -1], id=id[i].item() if id is not None else None, epoch=epoch)
-                    if self.repr_log_dir:
-                        self.log_repr(source[i], features[i], id=id[i].item() if id is not None else None, epoch=epoch)
+                        self.log_named_segmented_image(source[i], [int(round(j*scale_float)) for j, k in enumerate(segment_borders[i]) if k.item() == 1], id=id[i].item() if id is not None else None, epoch=epoch)
+                    if self.repr_data_log_dir and self.segm:
+                        self.log_repr_segmentation_data(segment_borders[i], id=id[i].item() if id is not None else None, epoch=epoch)
                         # [!] logging here, before projection as this is what representation segmentation uses 
                         # - TODO would otherwise need to change unmasked_features = features.clone() to be after projection instead of before
 
@@ -787,7 +796,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         name = "segm_id_" + str(id) + "_epoch_" + str(epoch) if id is not None else None  # will have names with id, possibly overwriting each epoch, otherwise random ids
         self.log_segmented_image(img, borders, name=name, convert_numbers_from_01=True)
 
-    def log_repr(self, img, features, id=None, epoch=None):
+    def log_repr_nonsegmentation_data(self, img, features, id=None, epoch=None):
         if torch.is_tensor(img):
             img = img.detach().cpu()
         if torch.is_tensor(features):
@@ -796,9 +805,16 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         features_np = np.array(features)
         img_name = "input_id_" + str(id) + "_epoch_" + str(epoch) if id is not None else None  # will have names with id, possibly overwriting each epoch, otherwise random ids
         features_name = "features_id_" + str(id) + "_epoch_" + str(epoch) if id is not None else None  # will have names with id, possibly overwriting each epoch, otherwise random ids
-        np.save(self.repr_log_dir + "/" + img_name, img_np)
-        np.save(self.repr_log_dir + "/" + features_name, features_np)
+        np.save(self.repr_data_log_dir + "/" + img_name, img_np)
+        np.save(self.repr_data_log_dir + "/" + features_name, features_np)
 
+    def log_repr_segmentation_data(self, borders, id=None, epoch=None):
+        if torch.is_tensor(borders):
+            borders = borders.detach().cpu()
+        borders_np = np.array(borders)
+        borders_name = "segmentborders_id_" + str(id) + "_epoch_" + str(epoch) if id is not None else None  # will have names with id, possibly overwriting each epoch, otherwise random ids
+        np.save(self.repr_data_log_dir + "/" + borders_name, borders_np)
+        
     def check_if_log_for_id(self, id=None):
         if self.random_log_freq is not None:
             if random.random() < self.random_log_freq:
