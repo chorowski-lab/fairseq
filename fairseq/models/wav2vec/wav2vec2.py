@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from fairseq import utils
 from fairseq.data.data_utils import compute_mask_indices
 from fairseq.dataclass import ChoiceEnum, FairseqDataclass
-from fairseq.models import BaseFairseqModel, register_model, register_model_architecture
+from fairseq.models import BaseFairseqModel, register_model
 from fairseq.modules import (
     Fp32GroupNorm,
     Fp32LayerNorm,
@@ -92,7 +92,7 @@ class Wav2Vec2Config(FairseqDataclass):
         default=False, metadata={"help": "apply layernorm first in the transformer"}
     )
     conv_feature_layers: str = field(
-        default="[(512, 10, 5), (512, 8, 4)] + [(512, 4, 2)] * 3 + [(512, 1, 1)]",
+        default="[(512, 10, 5)] + [(512, 3, 2)] * 4 + [(512,2,2)] + [(512,2,2)]",
         metadata={
             "help": "string describing convolutional feature extraction layers in form of a python list that contains "
             "[(dim, kernel_size, stride), ...]"
@@ -147,7 +147,7 @@ class Wav2Vec2Config(FairseqDataclass):
         default=0,
         metadata={
             "help": "secondary mask argument (used for more complex distributions), "
-            "see help in compute_mask_indicesh"
+            "see help in compute_mask_indices"
         },
     )
     no_mask_overlap: bool = field(
