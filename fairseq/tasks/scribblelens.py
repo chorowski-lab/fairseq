@@ -82,6 +82,9 @@ class ScribblelensTask(FairseqTask):
         super().__init__(cfg)
         self._target_dictionary = target_dictionary
         self._source_dictionary = source_dictionary
+        # if cfg.eval_wer:
+        #     assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
+        self.blank_symbol = "*"
 
     @classmethod
     def setup_task(cls, cfg:ScribblelensConfig, **kwargs):
@@ -96,8 +99,6 @@ class ScribblelensTask(FairseqTask):
         data_path = self.cfg.data
         task_cfg = task_cfg or self.cfg
         vocab_path = task_cfg.vocab_path if task_cfg.vocab_path is not None else task_cfg.data + '/tasman.alphabet.plus.space.mode5.json'
-
-        vocab_path = self.args.vocab_path if self.args.vocab_path is not None else self.args.data + '/tasman.alphabet.plus.space.mode5.json'
 
         # self.datasets[split] = FileHandwritingDataset(
         #     self.args.data,
