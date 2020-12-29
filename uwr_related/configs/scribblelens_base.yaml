@@ -1,0 +1,66 @@
+# @package _group_
+
+common:
+  fp16: false
+  log_format: json
+  log_interval: 20
+  tensorboard_logdir: tensorboard
+
+checkpoint:
+  keep_last_epochs: 3
+
+task:
+  _name: scribblelens
+  data: /pio/scratch/2/jch/wav2vec/data/scribblelens
+  vocab_path: '${env:PWD}/fairseq/data/handwriting/tasman.alphabet.plus.space.mode5.json'
+  enable_padding: True
+  pad_to_multiples_of: 4
+  max_sample_size: 250000
+  min_sample_size: 32000
+
+dataset:
+  num_workers: 0
+  max_tokens: 10000
+  skip_invalid_size_inputs_valid_test: true
+  valid_subset: test
+
+distributed_training:
+  distributed_world_size: 1
+  ddp_backend: no_c10d
+
+criterion:
+  _name: wav2vec
+  infonce: true
+  log_keys: ["prob_perplexity","code_perplexity","temp"]
+  loss_weights: [0.1, 10]
+
+optimization:
+  max_update: 400000
+  lr: [0.0003]
+
+optimizer:
+  _name: adam
+  adam_betas: (0.9,0.98)
+  adam_eps: 1e-06
+  weight_decay: 0.01
+
+lr_scheduler:
+  _name: polynomial_decay
+  warmup_updates: 20000
+
+model:
+  _name: wav2vec2_scribblelens
+  conv_feature_layers: '[(64, (3, 3), (1, 2), (1, 1)), (128, (5, 5), (2, 2), (2, 2)), (256, (3,3), (1, 1), (1, 1)), (256, (3,3), (1, 2), (1, 1)), (512, (3,3), (1, 1), (1, 1)), (512, (3,3), (1, 2), (1, 1)), (512, (3,2), (2, 1), (1, 0))]'
+  quantize_targets: true
+  final_dim: 256
+
+  encoder_layerdrop: 0.05
+  dropout: 0.1
+  attention_dropout: 0.1
+  dropout_input: 0.1
+  dropout_features: 0.1
+  feature_grad_mult: 0.1
+
+  latent_vars: 320
+  latent_groups: 2
+  latent_temp: [2,0.5,0.999995]

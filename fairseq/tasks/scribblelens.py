@@ -7,9 +7,23 @@
 
 import os
 import sys
+import torch
 
-from fairseq.data import FileHandwritingDataset, Dictionary, AddTargetDataset, HandwritingDictionary
-from . import LegacyFairseqTask, register_task
+from argparse import Namespace
+from dataclasses import dataclass, field
+from typing import Optional, Any
+from omegaconf import MISSING
+
+from fairseq.data import (AddTargetDataset, Dictionary, FileAudioDataset,
+                          FileHandwritingDataset, HandwritingDictionary,
+                          encoders)
+from fairseq.data.data_utils import post_process
+from fairseq.dataclass import FairseqDataclass
+from fairseq.dataclass.configs import GenerationConfig
+
+from . import FairseqTask, LegacyFairseqTask, register_task
+from .. import utils
+from ..logging import metrics
 
 
 class LabelEncoder(object):
@@ -22,90 +36,66 @@ class LabelEncoder(object):
         )
 
 
-@register_task("scribblelens")
-class ScribblelensTask(LegacyFairseqTask):
-    """
+@dataclass
+class ScribblelensConfig(FairseqDataclass):
+    data: str = field(default=MISSING, metadata={"help": "path to data directory"})
+    labels: bool = field(
+        default=False,
+        metadata={"help": "if to return also labels from dataset"}
+    )
+    vocab_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "path to data directory"}
+    )
+    normalize: bool = field(
+        default=False,
+        metadata={"help": "if set, normalizes input to have 0 mean and unit variance"},
+    )
+    enable_padding: bool = field(
+        default=False, metadata={"help": "pad shorter samples instead of cropping"}
+    )
+    pad_to_multiples_of: Optional[int] = field(
+        default=None,
+        metadata={"help": "enforce that lengths of inputs are multiples of this"}
+    )
+    max_sample_size: Optional[int] = field(
+        default=None, metadata={"help": "max sample size to crop to for batching"}
+    )
+    min_sample_size: Optional[int] = field(
+        default=None, metadata={"help": "min sample size to crop to for batching"}
+    )
 
-    """
 
-    @staticmethod
-    def add_args(parser):
-        """Add task-specific arguments to the parser."""
-        parser.add_argument("data", help="path to data directory")
-        parser.add_argument(
-            "--vocab-path", 
-            default=None, 
-            help="path to data directory")
-        parser.add_argument(
-            "--normalize",
-            action="store_true",
-            help="if set, normalizes input to have 0 mean and unit variance",
-        )
-        parser.add_argument(
-            "--max-sample-size",
-            default=None,
-            type=int,
-            help="max sample size to crop to for batching. default = min sample length",
-        )
-        parser.add_argument(
-            "--min-sample-size",
-            default=None,
-            type=int,
-            help="min sample size to crop to for batching. default = same as --max-sample-size",
-        )
 
-        parser.add_argument(
-            "--pad-to-multiples-of",
-            default=None,
-            type=int,
-            help="enforce that lengths of inputs are multiples of this",
-        )
+@register_task("scribblelens", dataclass=ScribblelensConfig)
+class ScribblelensTask(FairseqTask):
+    """"""
 
-        parser.add_argument(
-            "--enable-padding",
-            action="store_true",  
-            help="pad shorter samples instead of cropping",  # actually needed to be set to true
-        )
+    cfg: ScribblelensConfig
 
-        parser.add_argument(
-            "--labels",
-            default=None,
-            # type=bool,
-            # default=None,
-            #type=str,
-            action="store_true",  
-            help="if to return also labels from dataset" #"extension of the label file to load, if any",
-        )
-
-    def __init__(self, args, source_dictionary=None, target_dictionary=None):
-        super().__init__(args)
+    def __init__(
+        self, 
+        cfg: ScribblelensConfig, 
+        source_dictionary=None,
+        target_dictionary=None,
+    ):
+        super().__init__(cfg)
         self._target_dictionary = target_dictionary
         self._source_dictionary = source_dictionary
-        self.is_ctc = args.criterion == "ctc"
 
     @classmethod
-    def setup_task(cls, args, **kwargs):
+    def setup_task(cls, cfg:ScribblelensConfig, **kwargs):
         """Setup the task (e.g., load dictionaries).
 
         Args:
-            args (argparse.Namespace): parsed command-line arguments
+            cfg (ScribblelensConfig): configuration of this task
         """
+        return cls(cfg)
 
-        # if args.labels:
-        #     dict_path = os.path.join(args.data, f"dict.{args.labels}.txt")
-        #     target_dictionary = Dictionary.load(dict_path, scribble=True)
-        # else:
-        #     target_dictionary = None
-
-        # return cls(args, target_dictionary=target_dictionary)
-        return cls(args)
-
-    def load_dataset(self, split, **kwargs):
-        """Load a given dataset split.
-
-        Args:
-            split (str): name of the split (e.g., train, valid, test)
-        """
+    def load_dataset(self, split: str, task_cfg: FairseqDataclass = None, **kwargs):
+        data_path = self.cfg.data
+        task_cfg = task_cfg or self.cfg
+        vocab_path = task_cfg.vocab_path if task_cfg.vocab_path is not None else task_cfg.data + '/tasman.alphabet.plus.space.mode5.json'
 
         vocab_path = self.args.vocab_path if self.args.vocab_path is not None else self.args.data + '/tasman.alphabet.plus.space.mode5.json'
 
@@ -122,18 +112,17 @@ class ScribblelensTask(LegacyFairseqTask):
         #     normalize=self.args.normalize,
         # )
 
-        if not self.args.labels:
+        if not task_cfg.labels:
             self.datasets[split] = FileHandwritingDataset(
-                self.args.data,
+                task_cfg.data,
                 vocab_path=vocab_path,
                 split=split,
-                max_sample_size=self.args.max_sample_size,
-                min_sample_size=self.args.max_sample_size,
-                pad_to_multiples_of=self.args.pad_to_multiples_of,
-                min_length=self.args.min_sample_size,
-                pad=self.args.labels is not None or self.args.enable_padding,
-                
-                normalize=self.args.normalize,
+                max_sample_size=task_cfg.max_sample_size,
+                min_sample_size=task_cfg.max_sample_size,
+                pad_to_multiples_of=task_cfg.pad_to_multiples_of,
+                min_length=task_cfg.min_sample_size,
+                pad=task_cfg.labels is not None or task_cfg.enable_padding,
+                normalize=task_cfg.normalize,
             )
 
         else:
@@ -141,10 +130,10 @@ class ScribblelensTask(LegacyFairseqTask):
             # https://github.com/pytorch/fairseq/blob/master/examples/wav2vec/README.md#fine-tune-a-pre-trained-model-with-ctc
             # fairseq/examples/wav2vec/libri_labels.py   - some example of labels for librispeech, how it worked with commented out code
 
-            # dict_path = FileHandwritingDataset.vocabularyPath(self.args.data)  #os.path.join(self.args.data, f"dict.{self.args.labels}.txt")
+            # dict_path = FileHandwritingDataset.vocabularyPath(task_cfg.data)  #os.path.join(task_cfg.data, f"dict.{task_cfg.labels}.txt")
             self._target_dictionary = HandwritingDictionary(vocab_path)  #Dictionary.load(dict_path)  
 
-            # label_path = os.path.join(self.args.data, f"{split}.{self.args.labels}")  # generated an example how this looks like
+            # label_path = os.path.join(task_cfg.data, f"{split}.{task_cfg.labels}")  # generated an example how this looks like
             # labels = []
             # with open(label_path, "r") as f:
             #     for line in f:
@@ -153,16 +142,16 @@ class ScribblelensTask(LegacyFairseqTask):
             # process_label = LabelEncoder(self.target_dictionary)  // now encoded from the start (but text also available)
 
             self.datasets[split] = FileHandwritingDataset(
-                self.args.data,
+                task_cfg.data,
                 vocab_path=vocab_path,
                 split=split,
-                max_sample_size=self.args.max_sample_size,
-                min_sample_size=self.args.max_sample_size,
-                pad_to_multiples_of=self.args.pad_to_multiples_of,
-                min_length=self.args.min_sample_size,
-                pad=self.args.labels is not None or self.args.enable_padding,
+                max_sample_size=task_cfg.max_sample_size,
+                min_sample_size=task_cfg.max_sample_size,
+                pad_to_multiples_of=task_cfg.pad_to_multiples_of,
+                min_length=task_cfg.min_sample_size,
+                pad=task_cfg.labels is not None or task_cfg.enable_padding,
                 
-                normalize=self.args.normalize,
+                normalize=task_cfg.normalize,
                 labels=True,
             )
             
@@ -191,11 +180,11 @@ class ScribblelensTask(LegacyFairseqTask):
         return (sys.maxsize, sys.maxsize)
 
     def filter_indices_by_size(
-            self,
-            indices,
-            dataset,
-            max_positions=None,
-            ignore_invalid_inputs=False,
+        self,
+        indices,
+        dataset,
+        max_positions=None,
+        ignore_invalid_inputs=False,
     ):
         # we do not need to filter by size in this task as dataloaders take care of this
         return indices
