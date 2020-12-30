@@ -13,7 +13,7 @@ from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.dataclass import FairseqDataclass
 from fairseq.logging.meters import safe_round
-
+from fairseq.models.probed_model import reduce_probe_metrics
 
 @dataclass
 class Wav2VecCriterionConfig(FairseqDataclass):
@@ -109,6 +109,11 @@ class Wav2vecCriterion(FairseqCriterion):
             for i, l in enumerate(losses):
                 logging_output[f"loss_{i}"] = l.item()
 
+        if hasattr(model, 'get_probe_losses'):
+            probe_loss, probe_log_outs = model.get_probe_losses(sample)
+            loss += probe_loss
+            logging_output.update(probe_log_outs)
+
         if self.infonce:
             with torch.no_grad():
                 if logits.numel() == 0:
@@ -170,6 +175,9 @@ class Wav2vecCriterion(FairseqCriterion):
             "count",
         }
 
+        handled_keys = reduce_probe_metrics(logging_outputs, metrics)
+        builtin_keys.update(handled_keys)
+        
         for k in logging_outputs[0]:
             if k not in builtin_keys:
                 val = sum(log.get(k, 0) for log in logging_outputs)
@@ -179,6 +187,7 @@ class Wav2vecCriterion(FairseqCriterion):
                     )
                 else:
                     metrics.log_scalar(k, val / len(logging_outputs), round=3)
+        
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

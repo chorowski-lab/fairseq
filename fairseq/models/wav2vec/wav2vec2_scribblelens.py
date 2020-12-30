@@ -5,7 +5,7 @@
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 
 import numpy as np
 import torch
@@ -14,7 +14,7 @@ import torch.nn.functional as F
 from fairseq import utils
 from fairseq.data.data_utils import compute_mask_indices
 from fairseq.dataclass import ChoiceEnum, FairseqDataclass
-from fairseq.models import BaseFairseqModel, register_model
+from fairseq.models import BaseFairseqModel, register_model, probed_model
 from fairseq.modules import (
     Fp32GroupNorm,
     Fp32LayerNorm,
@@ -33,10 +33,10 @@ from .wav2vec2 import Wav2Vec2Config
 
 @dataclass
 class Wav2Vec2SLConfig(Wav2Vec2Config):
-    pass
+    probe_defs: Optional[Dict[str, Any]] = field(default=None, metadata={"help": "probes"})
 
 @register_model("wav2vec2_scribblelens", dataclass=Wav2Vec2SLConfig)
-class Wav2Vec2ModelSL(BaseFairseqModel):
+class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
     def __init__(self, cfg: Wav2Vec2Config):
         super().__init__()
         self.cfg = cfg
@@ -134,6 +134,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             )
 
         self.final_proj = nn.Linear(cfg.encoder_embed_dim, final_dim)
+
+        self.attach_probes(cfg.probe_defs)
 
     def upgrade_state_dict_named(self, state_dict, name):
         super().upgrade_state_dict_named(state_dict, name)

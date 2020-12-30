@@ -31,10 +31,7 @@ distributed_training:
   ddp_backend: no_c10d
 
 criterion:
-  _name: wav2vec
-  infonce: true
-  log_keys: ["prob_perplexity","code_perplexity","temp"]
-  loss_weights: [0.1, 10]
+  _name: probes
 
 optimization:
   max_update: 400000
@@ -74,5 +71,6 @@ model:
       module_name: post_extract_proj
       layer_dims: [768, 512, 73]
       kernel_size: 3
+      backprop_to_main: true
       output_selector: 'lambda x: {"output": x.transpose(1, 2)}'
       target_selector: 'lambda x: {"target":x["alignments"], "padding_mask": x["net_input"].get("padding_mask")}'

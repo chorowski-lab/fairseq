@@ -74,5 +74,6 @@ model:
       module_name: post_extract_proj
       layer_dims: [768, 512, 73]
       kernel_size: 3
+      backprop_to_main: true
       output_selector: 'lambda x: {"output": x.transpose(1, 2)}'
       target_selector: 'lambda x: {"target":x["alignments"], "padding_mask": x["net_input"].get("padding_mask")}'
