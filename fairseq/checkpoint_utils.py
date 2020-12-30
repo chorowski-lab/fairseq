@@ -93,9 +93,14 @@ def save_checkpoint(cfg: CheckpointConfig, trainer, epoch_itr, val_loss):
     if len(checkpoints) > 0:
         trainer.save_checkpoint(checkpoints[0], extra_state)
         for cp in checkpoints[1:]:
-            assert PathManager.copy(
-                checkpoints[0], cp, overwrite=True
-            ), f"Failed to copy {checkpoints[0]} to {cp}"
+            # assert PathManager.copy(
+            #     checkpoints[0], cp, overwrite=True
+            # ), f"Failed to copy {checkpoints[0]} to {cp}"
+            try:
+                os.remove(cp)
+            except:
+                pass
+            os.link(checkpoints[0], cp)
 
         write_timer.stop()
         logger.info(
