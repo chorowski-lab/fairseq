@@ -400,7 +400,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
 
         with torch.no_grad():
             targets = targets.reshape(-1, self.quantizer.groups)
+            targetts = targets.detach().cpu().numpy()
             ali_es = targets[:, 0] + self.quantizer.num_vars * targets[:, 1]
+            ali_es = ali_es.detach().cpu().numpy()
+            ali_gt = ali_gt.detach().cpu().numpy()
 
             return {
                 "adjusted_mutual_info": 
