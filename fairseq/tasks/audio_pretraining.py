@@ -5,11 +5,11 @@
 # the root directory of this source tree. An additional grant of patent rights
 # can be found in the PATENTS file in the same directory.
 
-import editdistance
 import os
 import sys
 import torch
 
+from argparse import Namespace
 from dataclasses import dataclass, field
 from typing import Optional, Any
 from omegaconf import MISSING
@@ -71,7 +71,7 @@ class AudioPretrainingConfig(FairseqDataclass):
         metadata={"help": "beam search config for evaluating wer during training"},
     )
     eval_wer_tokenizer: Any = field(
-        default="space",
+        default=None,
         metadata={"help": "tokenizer config for evaluating wer during training"},
     )
     eval_wer_post_process: str = field(
@@ -106,6 +106,7 @@ class AudioPretrainingTask(FairseqTask):
         self._source_dictionary = source_dictionary
         if cfg.eval_wer:
             assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
+        self.blank_symbol = "<s>"
 
     @classmethod
     def setup_task(cls, cfg: AudioPretrainingConfig, **kwargs):
@@ -123,25 +124,28 @@ class AudioPretrainingTask(FairseqTask):
 
         return cls(cfg, target_dictionary=target_dictionary)
 
-    def load_dataset(self, split, **kwargs):
-        """Load a given dataset split.
+    def load_dataset(self, split: str, task_cfg: FairseqDataclass = None, **kwargs):
+        data_path = self.cfg.data
+        task_cfg = task_cfg or self.cfg
 
-        Args:
-            split (str): name of the split (e.g., train, valid, test)
-        """
-        manifest = os.path.join(self.cfg.data, "{}.tsv".format(split))
+        # upgrade old task
+        if isinstance(task_cfg, Namespace):
+            if not hasattr(task_cfg, "autoregressive"):
+                task_cfg.autoregressive = not task_cfg.criterion == 'ctc'
+
+        manifest = os.path.join(data_path, "{}.tsv".format(split))
         self.datasets[split] = FileAudioDataset(
             manifest,
-            sample_rate=self.cfg.sample_rate,
+            sample_rate=task_cfg.sample_rate,
             max_sample_size=self.cfg.max_sample_size,
             min_sample_size=self.cfg.max_sample_size,
             min_length=self.cfg.min_sample_size,
-            pad=self.cfg.labels is not None or self.cfg.enable_padding,
-            normalize=self.cfg.normalize,
+            pad=task_cfg.labels is not None or task_cfg.enable_padding,
+            normalize=task_cfg.normalize,
         )
 
-        if self.cfg.labels:
-            label_path = os.path.join(self.cfg.data, f"{split}.{self.cfg.labels}")
+        if task_cfg.labels:
+            label_path = os.path.join(data_path, f"{split}.{task_cfg.labels}")
             labels = []
             with open(label_path, "r") as f:
                 for line in f:
@@ -156,7 +160,7 @@ class AudioPretrainingTask(FairseqTask):
                 eos=self.target_dictionary.eos(),
                 batch_targets=True,
                 process_label=process_label,
-                add_to_input=self.cfg.autoregressive,
+                add_to_input=task_cfg.autoregressive,
             )
 
     @property
@@ -185,7 +189,6 @@ class AudioPretrainingTask(FairseqTask):
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
-
         if self.cfg.eval_wer and self.cfg.autoregressive:
             metrics = self._inference_with_wer(self.sequence_generator, sample, model)
             logging_output["_num_char_errors"] = metrics["num_char_errors"]
@@ -204,15 +207,18 @@ class AudioPretrainingTask(FairseqTask):
             )
             if self.cfg.eval_wer_tokenizer:
                 self.tokenizer = encoders.build_tokenizer(self.cfg.eval_wer_tokenizer)
+            else:
+                self.tokenizer = None
         return model
 
     def _inference_with_wer(self, generator, sample, model):
-        def decode(toks, escape_unk=True):
+        import editdistance
+
+        def decode(toks):
             s = self.target_dictionary.string(
                 toks.int().cpu(),
                 self.cfg.eval_wer_post_process,
-                escape_unk=escape_unk,
-                extra_symbols_to_ignore={generator.eos},
+                escape_unk=True,
             )
             if self.tokenizer:
                 s = self.tokenizer.decode(s)
@@ -225,14 +231,11 @@ class AudioPretrainingTask(FairseqTask):
             hyp = decode(gen_out[i][0]["tokens"])
             ref = decode(
                 utils.strip_pad(sample["target"][i], self.target_dictionary.pad()),
-                escape_unk=True,
             )
-            hyp = post_process(hyp, self.cfg.eval_wer_post_process).strip("_")
-            ref = post_process(ref, self.cfg.eval_wer_post_process).strip("_")
             num_char_errors += editdistance.eval(hyp, ref)
             num_chars += len(ref)
-            hyp_words = hyp.split("_")
-            ref_words = ref.split("_")
+            hyp_words = hyp.split()
+            ref_words = ref.split()
             num_word_errors += editdistance.eval(hyp_words, ref_words)
             num_words += len(ref_words)
 

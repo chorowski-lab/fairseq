@@ -15,5 +15,5 @@ python train.py --distributed-world-size 1 --update-freq 2 ../data/LibriSpeech/ 
   --encoder-layerdrop 0.05 --dropout-input 0.1 --dropout-features 0.1 --feature-grad-mult 0.1 \
   --loss-weights '[0.1, 10]' --conv-pos 128 --conv-pos-groups 16 \
   --num-negatives 100 --cross-sample-negatives 0 --max-sample-size 250000 --min-sample-size 32000 \
-  --dropout 0.1 --attention-dropout 0.1 --weight-decay 0.01 --max-tokens 1400000 --max-update 400000 \
+  --dropout 0.1 --attention-dropout 0.1 --weight-decay 0.01 --max-tokens 500000 --max-update 400000 \
   --skip-invalid-size-inputs-valid-test --ddp-backend no_c10d

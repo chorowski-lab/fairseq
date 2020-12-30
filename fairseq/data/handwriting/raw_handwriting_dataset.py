@@ -12,6 +12,7 @@ import sys
 import torch
 import torch.nn.functional as F
 
+from .utils import num_between
 from . import scribblelens
 from .. import FairseqDataset
 
@@ -83,17 +84,18 @@ class RawHandwritingDataset(FairseqDataset):
                 feats = F.layer_norm(feats, feats.shape)
         return feats
 
-    def crop_to_max_size(self, wav, target_size_dim1, alignment=None):
+    def crop_to_max_size(self, wav, target_size_dim1, alignment=None):  # TODO perhaps change to just return indices, a bit cleaner?
 
         # if alignment set, cut it too - TODO maybe also mask half a letter etc., also in data!
+        # but maybe do this on crop labels stuff (mask if less than half of a letter visible or so)
 
         size = wav.shape[1] #len(wav)
         diff = size - target_size_dim1
         if diff <= 0:
-            if alignment:
-                return wav, alignment
+            if alignment is not None:
+                return wav, alignment, (0, size-1)
             else:
-                return wav
+                return wav, (0, size-1)
 
         if self.shuffle:
             start = np.random.randint(0, diff + 1)
@@ -101,37 +103,12 @@ class RawHandwritingDataset(FairseqDataset):
             # Deterministically pick the middle part
             start = (diff + 1) //2
         end = size - diff + start
-        if alignment:
-            return wav[:, start:end], alignment[start:end]
+        if alignment is not None:
+            return wav[:, start:end], alignment[start:end], (start, end-1)
         else:
-            return wav[:, start:end]
+            return wav[:, start:end], (start, end-1)  # end inclusive
         
     def collater(self, samples):
-
-        # TODO stuff with labels
-        # collated = self.dataset.collater(samples)
-        # if len(collated) == 0:
-        #     return collated
-        # indices = set(collated["id"].tolist())
-        # target = [s["label"] for s in samples if s["id"] in indices]
-
-        # if self.batch_targets:
-        #     collated["target_lengths"] = torch.LongTensor([len(t) for t in target])
-        #     target = data_utils.collate_tokens(target, pad_idx=self.pad, left_pad=False)
-        #     collated["ntokens"] = collated["target_lengths"].sum().item()
-        # else:
-        #     collated["ntokens"] = sum([len(t) for t in target])
-
-        # collated["target"] = target
-
-        # if self.add_to_input:
-        #     eos = target.new_full((target.size(0), 1), self.eos)
-        #     collated["target"] = torch.cat([target, eos], dim=-1).long()
-        #     collated["net_input"]["prev_output_tokens"] = torch.cat([eos, target], dim=-1).long()
-        #     collated["ntokens"] += target.size(0)
-        #return collated
-
-
 
         samples = [
             s
@@ -167,17 +144,38 @@ class RawHandwritingDataset(FairseqDataset):
         if self.labels:
             collated_labels_nontensor = []
             #collated_texts_nontensor = []  # TODO
-            collated_alignments = samples[0]["alignment"].new_zeros((len(sources), target_size))
+            collated_alignments = samples[0]["alignment"].new_full((len(sources), target_size), self.label_pad_idx)
 
+        available_labels = torch.BoolTensor(size=(len(samples),)).fill_(False)
+        available_alignments = torch.BoolTensor(size=(len(samples),)).fill_(False)
+        labels_texts = []
+        alignments_texts = []
+        # labels_with_ranges_arr is not a tensor, it just has None where unavailable
+
+        labels_with_ranges_arr = []
         for i, (sample, size) in enumerate(zip(samples, sizes)):
             source = sample["source"]
             diff = size - target_size
             if diff == 0:
                 collated_sources[i] = source
                 if self.labels:
-                    collated_labels_nontensor.append(sample["label"])
+                    if sample["label_available"]:
+                        available_labels[i] = True
+                        collated_labels_nontensor.append(sample["label"])
+                        labels_texts.append(sample["label_text"])
+                    else:
+                        collated_labels_nontensor.append(None)
+                        labels_texts.append([])
                     #collated_texts_nontensor.append(sample["text"])
-                    collated_alignments[i] = sample["alignment"]
+                    if sample["alignment_available"]:
+                        available_alignments[i] = True
+                        collated_alignments[i] = sample["alignment"]
+                        labels_with_ranges = self.get_letter_ranges(sample["alignment"], sample["alignment_idx"])
+                        labels_with_ranges_arr.append([(a, (c,d)) for a, _, (c, d) in labels_with_ranges])
+                        alignments_texts.append(sample["alignment_text"])
+                    else:
+                        labels_with_ranges_arr.append(None)
+                        alignments_texts.append([])
             elif diff < 0:
                 assert self.pad
                 collated_sources[i] = torch.cat(
@@ -186,19 +184,52 @@ class RawHandwritingDataset(FairseqDataset):
                 )
                 padding_mask[i, :, diff:] = True
                 if self.labels:
-                    collated_alignments[i] = torch.cat([sample["alignment"], sample["alignment"].new_full((-diff,), self.label_pad_idx)])
-                    coll_labels = sample["label"]  #self.collate_labels(collated_alignments[i], sample["label"], sample["text"])
-                    collated_labels_nontensor.append(coll_labels)
-                    #collated_texts_nontensor.append(coll_text)
+                    if sample["label_available"]:
+                        available_labels[i] = True
+                        collated_labels_nontensor.append(sample["label"])
+                        labels_texts.append(sample["label_text"])
+                    else:
+                        collated_labels_nontensor.append(None)
+                        labels_texts.append([])
+                    if sample["alignment_available"]:
+                        available_alignments[i] = True
+                        collated_alignments[i] = torch.cat([sample["alignment"], sample["alignment"].new_full((-diff,), self.label_pad_idx)])    
+                        labels_with_ranges = self.get_letter_ranges(sample["alignment"], sample["alignment_idx"])
+                        labels_with_ranges_arr.append([(a, (c,d)) for a, _, (c, d) in labels_with_ranges])
+                        alignments_texts.append(sample["alignment_text"])
+                    else:
+                        labels_with_ranges_arr.append(None)
+                        alignments_texts.append([])
             else:
-                # only case with cropping  TODO fix case with double letters without space between
+                # only case with cropping
                 if self.labels:
-                    collated_sources[i], collated_alignments[i] = self.crop_to_max_size(source, target_size, alignment=sample["alignment"])
-                    coll_labels = self.collate_labels(collated_alignments[i], sample["label"], sample["text"])
-                    collated_labels_nontensor.append(coll_labels)
+                    collated_sources[i], collated_alignments[i], (start, end) = self.crop_to_max_size(source, target_size, alignment=sample["alignment"])
+                    
+                    if sample["label_available"]:
+                        available_labels[i] = True
+                        collated_labels_nontensor.append(sample["label"])  # if no allignments, can't do better (or could put "None"); if there are allignments, will amend below
+                        labels_texts.append(sample["label_text"])  # if no allignments, can't do better (or could put "None"); if there are allignments, will amend below
+                    else:
+                        collated_labels_nontensor.append(None)
+                        labels_texts.append([])
+                    if sample["label_available"] and sample["alignment_available"] and torch.all(torch.eq(sample["label"], sample["alignment_idx"])):
+                        available_alignments[i] = True
+                        # also update alignments - possible padding of halves of letters on the borders etc.
+                        coll_labels, coll_labels_w_spaces, labels_with_ranges, collated_alignments[i], pad_begin = self.collate_labels(sample["alignment"], collated_alignments[i], sample["alignment_idx"], start, end)  #, sample["text"])
+                        if pad_begin is not None:
+                            padding_mask[i, :, pad_begin:] = True
+                        cropped_text = ''.join([sample["label_text"][i] for _, i, _ in labels_with_ranges])
+                        if sample["label_available"]:
+                            labels_texts[-1] = cropped_text  # fix non-collated appended stuff
+                            collated_labels_nontensor[-1] = coll_labels
+                        alignments_texts.append(cropped_text)
+                        labels_with_ranges_arr.append([(a, (c,d)) for a, _, (c, d) in labels_with_ranges])
+                    else:
+                        labels_with_ranges_arr.append(None)
+                        alignments_texts.append([])
                     #collated_texts_nontensor.append(coll_text)
                 else:
-                    collated_sources[i] = self.crop_to_max_size(source, target_size)
+                    collated_sources[i], _ = self.crop_to_max_size(source, target_size)
 
         input = {"source": collated_sources}
         if self.pad:
@@ -208,34 +239,172 @@ class RawHandwritingDataset(FairseqDataset):
             collated_labels = torch.IntTensor(size=(len(collated_labels_nontensor), max([len(i) for i in collated_labels_nontensor]))).fill_(self.label_pad_idx)
             for i, label in enumerate(collated_labels_nontensor):
                 collated_labels[i][:len(label)] = torch.tensor(label)
-            # TODO check collate labels to common length in a tensor
-            # TODO EOS stuff (?)
-            target_lengths = torch.LongTensor([len(t) for t in collated_labels_nontensor])
+            
+            # TODO EOS stuff (?) maybe rather as an option
+
+            # zeros where None
+            target_lengths = torch.LongTensor([len(t) if t is not None else 0 for t in collated_labels_nontensor])
+
             input["alignments"] = collated_alignments
+            
+            # [!] stuff with "_available" tells if data "\is actually present in the tensors or are there some defaults or sth
             return {
                 "id": torch.LongTensor([s["id"] for s in samples]), 
                 "net_input": input,
-                "target_lengths": target_lengths,
+                # [!] format as for ctc criterion (["target"]), other criterions would need to be updated to use labels
                 "target": collated_labels,  # data_utils.collate_tokens(collated_labels_nontensor, pad_idx=self.pad, left_pad=False),
-                "ntokens": target_lengths.sum().item(),
-                "alignments": collated_alignments
-                #"label_texts": collated_texts_nontensor,  # TODO?  non-collated texts of collated stuff
+                "target_available": available_labels,
+                "target_texts": labels_texts,
+                "target_lengths": target_lengths,  # 0 where there are no labels
+                "ntokens": target_lengths.sum().item(), # only sums tokens where there are labels
+                "alignments": collated_alignments,
+                "alignments_available": available_alignments,
+                "alignments_texts": alignments_texts,
+                "labels_with_ranges": labels_with_ranges_arr  # None where unavailable; (char_id)
                 }
         else:
             return {"id": torch.LongTensor([s["id"] for s in samples]), "net_input": input}
 
-    def collate_labels(self, collated_alignments, full_label, full_text):  # label is a list, text is a string
-        last_idx = self.label_blank_idx
-        #decode_dict = {x.item(): y for x,y in zip(full_label, full_text)}  # can zip like that as full_label is already a list
+    @staticmethod
+    def get_chars_ranges_uniform(num_chars, chars_begin, chars_end):
+        full_len_diff = chars_end - chars_begin
+        for_1_letter = float(full_len_diff) / float(num_chars)
+        # assuming will always have at least 1 frame for a letter on average
+        begin = chars_begin
+        end = int(round(chars_begin + for_1_letter))
         collated_label = []
-        # [!] TODO fix case with double letters and stuff
-        for num in collated_alignments:
-            if num.item() != last_idx and num.item() != self.label_pad_idx:
-                last_idx = num
-                if num.item() != self.label_blank_idx:
-                    collated_label.append(num.item())
-        #collated_text = ''.join([decode_dict[x] for x in collated_label])
-        return collated_label #, collated_text
+        for j in range(num_chars):
+            collated_label.append((begin, end))
+            begin = end + 1
+            end = int(round(chars_begin + (j+2)*for_1_letter))
+        return collated_label
+
+    def get_letter_ranges(self, full_alignments_original, full_label_original, cut_start_original=None, cut_end_original=None):
+
+        cut_start = 0 if cut_start_original is None else cut_start_original
+        cut_end = len(full_alignments_original) - 1 if cut_end_original is None else cut_end_original
+
+        last_idx = self.label_blank_idx
+        full_alignments = torch.cat([full_alignments_original, full_alignments_original.new_full((1,), self.label_pad_idx)])  # for no special case 
+        #decode_dict = {x.item(): y for x,y in zip(full_label, full_text)}  # can zip like that as full_label is already a list
+        naive_collated_label = []
+        naive_letter_ranges = []
+        letter_begin = 0
+        
+        for i, numTensor in enumerate(full_alignments):
+            num = numTensor.item()
+            if num != last_idx:
+                if last_idx != self.label_pad_idx and last_idx != self.label_eos_idx:
+                    naive_collated_label.append(last_idx)
+                    naive_letter_ranges.append((letter_begin, i-1))
+                letter_begin = i
+            last_idx = num
+
+        full_label = torch.cat([full_label_original, full_label_original.new_full((1,), self.label_pad_idx)])  
+        # ^ so will always append thing before pad without additional case after the loop
+        label_qties = []
+        last_idx = full_label[0]  #self.label_blank_idx
+        qty = 0
+        for numTensor in full_label:
+            num = numTensor.item()
+            if num != last_idx and last_idx != self.label_pad_idx and last_idx != self.label_eos_idx:
+                label_qties.append((last_idx, qty))
+                qty = 1
+            else:
+                qty += 1
+            last_idx = num
+
+        # TODO if stuff empty, return empty tensor or array or so
+
+        next_ground_id = 0
+        next_ground_seen = False
+        last_idx = self.label_blank_idx
+        collated_labels_with_ranges = []
+        naive_letter_ranges.append((-1, -1))
+        naive_collated_label.append(self.label_pad_idx)
+        ground_ranges = []
+        max_end_before = -1
+        min_begin_after = 2*len(full_alignments_original)
+        label_idx = -1  # to track positions from original label
+
+        for char, (begin, end) in list(zip(naive_collated_label, naive_letter_ranges)):
+            # first append any blanks from ground truth, blanks from naive stuff are omitted later in the loop
+            # can also do it this way - would ignore some random 1-length blanks in alignments, although that should rather NOT happen
+            if label_qties[next_ground_id][0] == self.label_blank_idx:  # rather can't happen, blanks not in label; TODO? maybe could also treat pad/sth else similarly, but rather not needed
+                # don't append blanks there, those are not spaces!
+                next_ground_id += 1
+            if next_ground_id >= len(label_qties):
+                break
+            if char == self.label_blank_idx: # omit blanks in naive stuff not existent in ground, and calculate repetitions otherwise; blanks calculated from ground, above
+                continue                     # TODO? maybe could also treat pad/sth else similarly, but rather not needed
+            # from here no blanks in both places
+            if next_ground_seen and char != label_qties[next_ground_id][0]:
+                if len(ground_ranges) == label_qties[next_ground_id][1]:
+                    #_ = RawHandwritingDataset.get_chars_ranges_uniform(3, begin, end)
+                    ranges = ground_ranges
+                else:
+                    ranges = RawHandwritingDataset.get_chars_ranges_uniform(label_qties[next_ground_id][1], begin, end)
+                for a, b in ranges:
+                    mid = (a + b) // 2
+                    label_idx += 1
+                    if mid < cut_start:
+                        max_end_before = max(max_end_before, b - cut_start)
+                        continue
+                    elif mid > cut_end:
+                        min_begin_after = min(min_begin_after, a - cut_start)
+                        continue
+                    collated_labels_with_ranges.append([label_qties[next_ground_id][0], label_idx, [a, b]])  # need to update with label_qties[next_ground_id][0], NOT char - char is next
+                next_ground_id += 1
+                next_ground_seen = False
+                ground_ranges = []  # to be all seen in char == label_qties[next_ground_id][0] case - also in this loop spin
+            if next_ground_id >= len(label_qties):
+                break
+            if char == label_qties[next_ground_id][0]:
+                next_ground_seen = True
+                ground_ranges.append((begin, end))
+            # TODO else some error/warning or just ignore? could still work with messy alignments then
+
+        # no blanks, no need to span stuff; spaces according to alignment
+
+        if cut_start_original is not None or cut_end_original is not None:
+            return collated_labels_with_ranges, ((max_end_before if max_end_before >= 0 else None), (min_begin_after if min_begin_after < cut_end - cut_start + 1 else None))
+        else:
+            return collated_labels_with_ranges
+
+    # TODO separate function for getting the ranges of the letters and do this also when not cropping
+    # modifies initial collated_alignments if needed
+    def collate_labels(self, full_alignments_original, collated_alignments, full_label_original, cut_start, cut_end):  #, full_text):  # label is a list, text is a string
+        
+        collated_labels_with_ranges, (mask_to, mask_from) = self.get_letter_ranges(full_alignments_original, full_label_original, cut_start_original=cut_start, cut_end_original=cut_end)
+
+        # mask_to & mask_from are indices
+
+        pad_begin = None
+        # [!] masks before first in collated_labels_with_ranges and after last - if cut_start < first range, similarly with end
+        # (case when we have there e.g. <half of some letter)
+        if mask_to is not None or mask_from is not None:
+            changed_begin = mask_to + 1 if mask_to is not None else 0
+            changed_end = mask_from - 1 if mask_from is not None else cut_end
+            torch.roll(collated_alignments, -changed_begin)
+            collated_alignments[changed_end - changed_begin + 1:] = self.label_pad_idx  
+            pad_begin = changed_end - changed_begin + 1
+            # blanks can sometimes get padded if spaces are not in the label
+
+        # [!] can be negative if e.g. we have half of the letter after the cut
+        collated_labels_with_ranges = [(a, idx, (b - cut_start,c - cut_start)) for a, idx, (b,c) in collated_labels_with_ranges]  # change to tuple and shift to new indices
+
+        collated_label_with_spaces_on_ends = [char for char, _, _ in collated_labels_with_ranges] # here returning non-tensor [!], later fill in tensor
+        if collated_label_with_spaces_on_ends[0] == self.label_blank_idx and collated_label_with_spaces_on_ends[-1] == self.label_blank_idx:
+            collated_label = collated_label_with_spaces_on_ends[1:-1]
+        elif collated_label_with_spaces_on_ends[0] == self.label_blank_idx:
+            collated_label = collated_label_with_spaces_on_ends[1:]
+        elif collated_label_with_spaces_on_ends[-1] == self.label_blank_idx:
+            collated_label = collated_label_with_spaces_on_ends[:-1]
+        else:
+            collated_label = collated_label_with_spaces_on_ends[:]
+
+        # [!] changes collated alignments tensor before
+        return collated_label, collated_label_with_spaces_on_ends, collated_labels_with_ranges, collated_alignments, pad_begin #, collated_text
 
 
     def num_tokens(self, index):
@@ -254,12 +423,14 @@ class RawHandwritingDataset(FairseqDataset):
         """Return an ordered list of indices. Batches will be constructed based
         on this order."""
 
+        # TODO [!] separate ordering of labeled and unlabeled data (if labels not everywhere)
+
         if self.shuffle:
             order = [np.random.permutation(len(self))]
         else:
             order = [np.arange(len(self))]
 
-        order.append(self.sizes)  # TODO should return also label size with labels? (as in AddTargetDataset), but this screws up much other stuff
+        order.append(self.sizes)  # TODO (?) should return also label size with labels? (as in AddTargetDataset), but this screws up much other stuff
         return np.lexsort(order)[::-1]
 
 
@@ -267,6 +438,7 @@ class FileHandwritingDataset(RawHandwritingDataset):
     def __init__(
         self,
         dist_root,
+        vocab_path,  # has to be passed, can be under dist_root or elsewhere, or can be "" (see ScribbleLensDataset)
         split,
         max_sample_size=None,
         min_sample_size=None,
@@ -294,7 +466,7 @@ class FileHandwritingDataset(RawHandwritingDataset):
             split=split,                                      # Train, test, valid or unsupervised. Train/Test/Valid have character transcripts, unspuervised has only images
             # Not used in the simple ScribbleLens loader
             transcript_mode=5,                                  # Legacy space handling, has to be like that
-            vocabulary=FileHandwritingDataset.vocabularyPath(dist_root),  # Path
+            vocabulary=vocab_path,  # Path
         )
         if labels:
             self.set_special_indices(
@@ -329,13 +501,13 @@ class FileHandwritingDataset(RawHandwritingDataset):
         #         self.sizes.append(sz)
         # logger.info(f"loaded {len(self.fnames)}, skipped {skipped} samples")
 
-    @staticmethod
-    def vocabularyPathSuffix():
-        return '/tasman.alphabet.plus.space.mode5.json'
+    # @staticmethod
+    # def vocabularyPathSuffix():
+    #     return '/tasman.alphabet.plus.space.mode5.json'
 
-    @staticmethod
-    def vocabularyPath(prefix):
-        return prefix + FileHandwritingDataset.vocabularyPathSuffix()
+    # @staticmethod
+    # def vocabularyPath(prefix):
+    #     return prefix + FileHandwritingDataset.vocabularyPathSuffix()
 
     def __getitem__(self, index):
         # import soundfile as sf
@@ -345,15 +517,26 @@ class FileHandwritingDataset(RawHandwritingDataset):
         # feats = torch.from_numpy(wav).float()
         # feats = self.postprocess(feats, curr_sample_rate)
 
-        feats = self.dataset[index]['image'][:,:,0]
+        feats = (self.dataset[index]['image'][:,:,0]).T  # image 32 x W
 
         if self.labels:
+            label_available = self.dataset[index]['text_available']
+            label = self.dataset[index]['text'] if label_available else None
+            label_text = self.dataset.alphabet.idx2str([x.item() for x in self.dataset[index]['text']]) if label_available else None  # need to change to array for idx2str to iter correct stuff
+            alignment_available = 'alignment' in self.dataset[index].keys() and len(self.dataset[index]['alignment']) == feats.shape[1]
+            alignment = self.dataset[index]['alignment'] if alignment_available else None
+            alignment_idx = torch.tensor(self.dataset.alphabet.symList2idxList(self.dataset[index]['alignment_text'])) if alignment_available else None
+            alignment_text = self.dataset[index]['alignment_text'] if alignment_available else None
             return {
                 "id": index, 
-                "source": feats.T,  # image 32 x W
-                "alignment": self.dataset[index]['alignment'],
-                "label": self.dataset[index]['text'],
-                "text": self.dataset[index]['alignment_text']
+                "source": feats,
+                "alignment_available": alignment_available,
+                "alignment": alignment,
+                "alignment_idx": alignment_idx,  # using this for letter ranges
+                "alignment_text": alignment_text,
+                "label_available": label_available,
+                "label": label,
+                "label_text": label_text
             }
         else:
-            return {"id": index, "source": feats.T}
+            return {"id": index, "source": feats}

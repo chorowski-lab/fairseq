@@ -323,8 +323,7 @@ class ScribbleLensDataset(torch.utils.data.Dataset):
 
         self.vocabulary = vocabulary
         if self.vocabulary != "" and not os.path.isfile(self.vocabulary):
-            print ("ERROR: You specified a vocabulary that does not exist: " + str(self.vocabulary))
-            sys.exit(4)
+            raise Exception("ERROR: You specified a vocabulary that does not exist: " + str(self.vocabulary))
         
         # [!] changed    
         self.alphabet = HandwritingDictionary(self.vocabulary)
