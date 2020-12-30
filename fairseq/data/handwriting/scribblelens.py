@@ -294,6 +294,7 @@ class ScribbleLensDataset(torch.utils.data.Dataset):
         self.root = root
 
         self.file = zipfile.ZipFile(root)
+        self.pid = os.getpid()
         root = 'scribblelens.corpus.v1'
 
         self.target_width = target_width
@@ -657,8 +658,13 @@ class ScribbleLensDataset(torch.utils.data.Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        if not self.file:  # Reopen to work with multiprocessing
+        # Reopen the ZipFile to work with multiprocessing
+        if self.pid != os.getpid() and self.file:
+            self.file.close()
+            self.file = None
+        if not self.file:
             self.file = zipfile.ZipFile(self.root)
+            self.pid = os.getpid()
         item = self.data[idx]
 
         df_item = self.data_frame.iloc[idx]

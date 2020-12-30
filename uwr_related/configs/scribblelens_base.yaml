@@ -21,7 +21,7 @@ task:
   labels: True
 
 dataset:
-  num_workers: 0
+  num_workers: 2
   max_tokens: 10000
   skip_invalid_size_inputs_valid_test: true
   valid_subset: test
