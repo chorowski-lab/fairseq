@@ -77,10 +77,14 @@ class ScribblelensTask(FairseqTask):
         self, 
         cfg: ScribblelensConfig, 
         source_dictionary=None,
+        target_dictionary=None,
     ):
         super().__init__(cfg)
-        self._target_dictionary = None
+        self._target_dictionary = target_dictionary
         self._source_dictionary = source_dictionary
+        # if cfg.eval_wer:
+        #     assert cfg.labels is not None, "eval_wer can only be set during fine-tuning"
+        self.blank_symbol = "*"
 
     @classmethod
     def setup_task(cls, cfg:ScribblelensConfig, **kwargs):
@@ -95,6 +99,19 @@ class ScribblelensTask(FairseqTask):
         data_path = self.cfg.data
         task_cfg = task_cfg or self.cfg
         vocab_path = task_cfg.vocab_path if task_cfg.vocab_path is not None else task_cfg.data + '/tasman.alphabet.plus.space.mode5.json'
+
+        # self.datasets[split] = FileHandwritingDataset(
+        #     self.args.data,
+        #     vocab_path=vocab_path,
+        #     split=split,
+        #     max_sample_size=self.args.max_sample_size,
+        #     min_sample_size=self.args.max_sample_size,
+        #     pad_to_multiples_of=self.args.pad_to_multiples_of,
+        #     min_length=self.args.min_sample_size,
+        #     pad=self.args.labels is not None or self.args.enable_padding,
+        #     labels=self.args.labels,
+        #     normalize=self.args.normalize,
+        # )
 
         if not task_cfg.labels:
             self.datasets[split] = FileHandwritingDataset(
@@ -114,7 +131,7 @@ class ScribblelensTask(FairseqTask):
             # https://github.com/pytorch/fairseq/blob/master/examples/wav2vec/README.md#fine-tune-a-pre-trained-model-with-ctc
             # fairseq/examples/wav2vec/libri_labels.py   - some example of labels for librispeech, how it worked with commented out code
 
-            #dict_path = FileHandwritingDataset.vocabularyPath(task_cfg.data)  #os.path.join(task_cfg.data, f"dict.{task_cfg.labels}.txt")
+            # dict_path = FileHandwritingDataset.vocabularyPath(task_cfg.data)  #os.path.join(task_cfg.data, f"dict.{task_cfg.labels}.txt")
             self._target_dictionary = HandwritingDictionary(vocab_path)  #Dictionary.load(dict_path)  
 
             # label_path = os.path.join(task_cfg.data, f"{split}.{task_cfg.labels}")  # generated an example how this looks like

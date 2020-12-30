@@ -17,6 +17,7 @@ task:
   pad_to_multiples_of: 4
   max_sample_size: 250000
   min_sample_size: 32000
+  normalize: false
 
 dataset:
   num_workers: 0
@@ -53,6 +54,7 @@ model:
   conv_feature_layers: '[(64, (3, 3), (1, 2), (1, 1)), (128, (5, 5), (2, 2), (2, 2)), (256, (3,3), (1, 1), (1, 1)), (256, (3,3), (1, 2), (1, 1)), (512, (3,3), (1, 1), (1, 1)), (512, (3,3), (1, 2), (1, 1)), (512, (3,2), (2, 1), (1, 0))]'
   quantize_targets: true
   final_dim: 256
+  encoder_embed_dim: 768
 
   encoder_layerdrop: 0.05
   dropout: 0.1
