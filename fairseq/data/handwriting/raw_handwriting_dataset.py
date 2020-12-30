@@ -238,12 +238,14 @@ class RawHandwritingDataset(FairseqDataset):
             assert self.pad
             collated_labels = torch.IntTensor(size=(len(collated_labels_nontensor), max([len(i) for i in collated_labels_nontensor]))).fill_(self.label_pad_idx)
             for i, label in enumerate(collated_labels_nontensor):
-                collated_labels[i][:len(label)] = torch.tensor(label)
+                collated_labels[i][:len(label)] = label
             
             # TODO EOS stuff (?) maybe rather as an option
 
             # zeros where None
             target_lengths = torch.LongTensor([len(t) if t is not None else 0 for t in collated_labels_nontensor])
+
+            input["alignments"] = collated_alignments
 
             # [!] stuff with "_available" tells if data "\is actually present in the tensors or are there some defaults or sth
             return {

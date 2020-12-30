@@ -34,6 +34,7 @@ from .wav2vec2 import Wav2Vec2Config
 @dataclass
 class Wav2Vec2SLConfig(Wav2Vec2Config):
     probe_defs: Optional[Dict[str, Any]] = field(default=None, metadata={"help": "probes"})
+    compute_alignment_metrics: bool = field(default=False, metadata={"help": "compute mutual info and rand scores"})
 
 @register_model("wav2vec2_scribblelens", dataclass=Wav2Vec2SLConfig)
 class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
@@ -261,7 +262,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
 
         return logits
 
-    def forward(self, source, padding_mask=None, mask=True, features_only=False):
+    def forward(self, source, padding_mask=None, mask=True, features_only=False, alignments=None):
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(source)
             if self.feature_grad_mult != 1.0:
@@ -269,6 +270,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
         else:
             with torch.no_grad():
                 features = self.feature_extractor(source)
+
+        compute_alignment_metrics = self.cfg.compute_alignment_metrics and alignments is not None
 
         features_pen = features.float().pow(2).mean()
 
@@ -284,6 +287,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
             assert extra == 0
             padding_mask = padding_mask[:, ::scale]
             assert np.all(padding_mask.shape == features.shape[:-1])
+            if compute_alignment_metrics:
+                alignments = alignments[:, ::scale]
 
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
@@ -314,6 +319,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
                 y = unmasked_features[mask_indices].view(
                     unmasked_features.size(0), -1, unmasked_features.size(-1)
                 )
+                if compute_alignment_metrics:
+                    alignments = alignments[mask_indices]
             else:
                 y = unmasked_features
         else:
@@ -327,7 +334,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
             return {"x": x, "padding_mask": padding_mask}
 
         if self.quantizer:
-            q = self.quantizer(y, produce_targets=False)
+            q = self.quantizer(y, produce_targets=compute_alignment_metrics)
             y = q["x"]
             num_vars = q["num_vars"]
             code_ppl = q["code_perplexity"]
@@ -379,7 +386,34 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
             result["num_vars"] = num_vars
             result["temp"] = curr_temp
 
+        if compute_alignment_metrics:
+            result = {
+                **result,
+                **self.get_alignment_metrics(q["targets"], alignments)
+            }
+
         return result
+
+    def get_alignment_metrics(self, targets, ali_gt):
+        # We currently only quantize unmasked features
+        import sklearn.metrics
+
+        with torch.no_grad():
+            targets = targets.reshape(-1, self.quantizer.groups)
+            targetts = targets.detach().cpu().numpy()
+            ali_es = targets[:, 0] + self.quantizer.num_vars * targets[:, 1]
+            ali_es = ali_es.detach().cpu().numpy()
+            ali_gt = ali_gt.detach().cpu().numpy()
+
+            return {
+                "adjusted_mutual_info": 
+                    sklearn.metrics.adjusted_mutual_info_score(ali_gt, ali_es, average_method='arithmetic'),
+                "normalized_mutual_info": 
+                    sklearn.metrics.normalized_mutual_info_score(ali_gt, ali_es, average_method='arithmetic'),
+                "adjusted_rand_score":
+                    sklearn.metrics.adjusted_rand_score(ali_gt, ali_es)
+            }
+
 
     def quantize(self, x):
         assert self.quantizer is not None
