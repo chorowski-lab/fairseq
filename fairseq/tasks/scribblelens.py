@@ -93,78 +93,31 @@ class ScribblelensTask(FairseqTask):
         Args:
             cfg (ScribblelensConfig): configuration of this task
         """
-        return cls(cfg)
+        if cfg.labels:
+            target_dictionary = HandwritingDictionary(cfg.vocab_path)
+        else:
+            target_dictionary = None
+
+        return cls(cfg, target_dictionary=target_dictionary)
 
     def load_dataset(self, split: str, task_cfg: FairseqDataclass = None, **kwargs):
         data_path = self.cfg.data
         task_cfg = task_cfg or self.cfg
         vocab_path = task_cfg.vocab_path if task_cfg.vocab_path is not None else task_cfg.data + '/tasman.alphabet.plus.space.mode5.json'
 
-        # self.datasets[split] = FileHandwritingDataset(
-        #     self.args.data,
-        #     vocab_path=vocab_path,
-        #     split=split,
-        #     max_sample_size=self.args.max_sample_size,
-        #     min_sample_size=self.args.max_sample_size,
-        #     pad_to_multiples_of=self.args.pad_to_multiples_of,
-        #     min_length=self.args.min_sample_size,
-        #     pad=self.args.labels is not None or self.args.enable_padding,
-        #     labels=self.args.labels,
-        #     normalize=self.args.normalize,
-        # )
+        self.datasets[split] = FileHandwritingDataset(
+            task_cfg.data,
+            vocab_path=vocab_path,
+            split=split,
+            max_sample_size=task_cfg.max_sample_size,
+            min_sample_size=task_cfg.max_sample_size,
+            pad_to_multiples_of=task_cfg.pad_to_multiples_of,
+            min_length=task_cfg.min_sample_size,
+            pad=task_cfg.labels is not None or task_cfg.enable_padding,
+            normalize=task_cfg.normalize,
+            labels=task_cfg.labels
+        )
 
-        if not task_cfg.labels:
-            self.datasets[split] = FileHandwritingDataset(
-                task_cfg.data,
-                vocab_path=vocab_path,
-                split=split,
-                max_sample_size=task_cfg.max_sample_size,
-                min_sample_size=task_cfg.max_sample_size,
-                pad_to_multiples_of=task_cfg.pad_to_multiples_of,
-                min_length=task_cfg.min_sample_size,
-                pad=task_cfg.labels is not None or task_cfg.enable_padding,
-                normalize=task_cfg.normalize,
-            )
-
-        else:
-
-            # https://github.com/pytorch/fairseq/blob/master/examples/wav2vec/README.md#fine-tune-a-pre-trained-model-with-ctc
-            # fairseq/examples/wav2vec/libri_labels.py   - some example of labels for librispeech, how it worked with commented out code
-
-            # dict_path = FileHandwritingDataset.vocabularyPath(task_cfg.data)  #os.path.join(task_cfg.data, f"dict.{task_cfg.labels}.txt")
-            self._target_dictionary = HandwritingDictionary(vocab_path)  #Dictionary.load(dict_path)  
-
-            # label_path = os.path.join(task_cfg.data, f"{split}.{task_cfg.labels}")  # generated an example how this looks like
-            # labels = []
-            # with open(label_path, "r") as f:
-            #     for line in f:
-            #         labels.append(line)
-
-            # process_label = LabelEncoder(self.target_dictionary)  // now encoded from the start (but text also available)
-
-            self.datasets[split] = FileHandwritingDataset(
-                task_cfg.data,
-                vocab_path=vocab_path,
-                split=split,
-                max_sample_size=task_cfg.max_sample_size,
-                min_sample_size=task_cfg.max_sample_size,
-                pad_to_multiples_of=task_cfg.pad_to_multiples_of,
-                min_length=task_cfg.min_sample_size,
-                pad=task_cfg.labels is not None or task_cfg.enable_padding,
-                
-                normalize=task_cfg.normalize,
-                labels=True,
-            )
-            
-            # AddTargetDataset(
-            #     self.datasets[split],
-            #     labels,
-            #     pad=self.target_dictionary.pad(),
-            #     eos=self.target_dictionary.eos(),
-            #     batch_targets=True,
-            #     process_label=process_label,
-            #     add_to_input=not self.is_ctc,
-            # )
 
     @property
     def source_dictionary(self):
