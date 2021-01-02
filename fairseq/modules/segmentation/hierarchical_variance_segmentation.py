@@ -11,13 +11,32 @@ def variance(linearSum, squaresSum, size):
 def se(linearSum, squaresSum, size):  # square error
     return np.sum(squaresSum - np.square(linearSum) / size)  # sum of "se vector"
 
+def varianceDiff(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2):
+    return variance(linearSum1 + linearSum2, squaresSum1 + squaresSum2, size1 + size2) - variance(linearSum1, squaresSum1, size1) - variance(linearSum2, squaresSum2, size2)
+
+def seDiff(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2):
+    return se(linearSum1 + linearSum2, squaresSum1 + squaresSum2, size1 + size2) - se(linearSum1, squaresSum1, size1) - se(linearSum2, squaresSum2, size2)
+
+def cosDist(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2):  # cosine distance
+    unscaledSim = np.dot(linearSum1, linearSum2) / (np.sqrt(np.dot(linearSum1, linearSum1)) * np.sqrt(np.dot(linearSum2, linearSum2)))
+    unscaledAsDist = -unscaledSim + 1.  # change from similarity to distance; we mainly care about order for priority queue, for that any mapping reversing order is ok (low similarity = high distance)
+    # ^ here we have a change from [-1, 1] to [0, 2]; standard "cosine distance"
+    return unscaledAsDist * (size1 + size2)  
+    # scaling so that big nonsense averaged almost-random segments don't appear as similar (randomnoise1 ~= randomnoise2)
+    # this is where changing form similarity to distance mapping can make a difference, but linear one seems ok
+    # this scaling is similar to the sum of distances of all elements to the average of the another segment and vice versa (can use sums instead of averages for cosine sim; 
+    # but that's perhaps not exactly this sum as cosine_similarity ( (sum_i a_i) , x ) is not the same as (sum_i cosine_similarity ( a_i , x )) )
+    # but the other one would be more expensive to compute
+
 # [!] lines has to be a numpy array, np.sum() crashes if done on tensor
 def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLine=None, mergePriority="mse"):  # k is sum of number of segments for all lines
     
     if mergePriority == "se":  # var not divided by size, square error
-        costFun = lambda linSum, sqSum, size: se(linSum, sqSum, size)
+        costFun = seDiff  #lambda linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2: seDiff(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2)
     elif mergePriority == "var":  # var is mse
-        costFun = lambda linSum, sqSum, size: variance(linSum, sqSum, size)
+        costFun = varianceDiff  #lambda linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2: varianceDiff(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2)
+    elif mergePriority == "cos":
+        costFun = cosDist  #lambda linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2: cos(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2)
     else:
         assert False
 
@@ -37,10 +56,13 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLin
             linSum2, sqSum2 = segmentsDict.getSegmentSums(segmRight)
             line1, left1, right1 = segm
             line2, left2, right2 = segmRight
-            oldVar1 = costFun(linSum1, sqSum1, right1 - left1 + 1)
-            oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = costFun(linSum1 + linSum2, sqSum1 + sqSum2, right2 - left1 + 1)
-            heappush(q, (mergedVariance - oldVar1 - oldVar2, segm, segmRight))
+            #oldVar1 = costFun(linSum1, sqSum1, right1 - left1 + 1)
+            #oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
+            #mergedVariance = costFun(linSum1 + linSum2, sqSum1 + sqSum2, right2 - left1 + 1)
+            size1 = right1 - left1 + 1
+            size2 = right2 - left2 + 1
+            costDiff = costFun(linSum1, sqSum1, size1, linSum2, sqSum2, size2)
+            heappush(q, (costDiff, segm, segmRight))
        
     varChanges = []
     merges = []
@@ -60,21 +82,26 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLin
         toRight = segmentsDict.getSegmentRight(merged)
         linSumMerged, sqSumMerged = segmentsDict.getSegmentSums(merged)
         lineMerged, leftMerged, rightMerged = merged
-        varMerged = costFun(linSumMerged, sqSumMerged, rightMerged - leftMerged + 1)
+        sizeMerged = rightMerged - leftMerged + 1
+        #varMerged = costFun(linSumMerged, sqSumMerged, rightMerged - leftMerged + 1)
         
         if toLeft is not None:
             linSum2, sqSum2 = segmentsDict.getSegmentSums(toLeft)
             line2, left2, right2 = toLeft
-            oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = costFun(linSumMerged + linSum2, sqSumMerged + sqSum2, rightMerged - left2 + 1)
-            heappush(q, (mergedVariance - varMerged - oldVar2, toLeft, merged))
+            size2 = right2 - left2 + 1
+            #oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
+            #mergedVariance = costFun(linSumMerged + linSum2, sqSumMerged + sqSum2, rightMerged - left2 + 1)
+            costDiff = costFun(linSumMerged, sqSumMerged, sizeMerged, linSum2, sqSum2, size2)
+            heappush(q, (costDiff, toLeft, merged))
             
         if toRight is not None:
             linSum2, sqSum2 = segmentsDict.getSegmentSums(toRight)
             line2, left2, right2 = toRight
-            oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
-            mergedVariance = costFun(linSumMerged + linSum2, sqSumMerged + sqSum2, right2 - leftMerged + 1)
-            heappush(q, (mergedVariance - varMerged - oldVar2, merged, toRight))
+            size2 = right2 - left2 + 1
+            #oldVar2 = costFun(linSum2, sqSum2, right2 - left2 + 1)
+            #mergedVariance = costFun(linSumMerged + linSum2, sqSumMerged + sqSum2, right2 - leftMerged + 1)
+            costDiff = costFun(linSumMerged, sqSumMerged, sizeMerged, linSum2, sqSum2, size2)
+            heappush(q, (costDiff, merged, toRight))
             
     return varChanges, merges, segmentsDict
 
@@ -102,6 +129,8 @@ class HierarchicalVarianceSegmentationLayer(Function):
 
         inputDevice = inputGPU.device
         padMaskInputDevice = padMask.device if padMask is not None else False
+
+        # TODO TODO add shortening policy stuff !
 
         # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
         input = inputGPU.detach().to('cpu').numpy()  
@@ -144,6 +173,8 @@ class HierarchicalVarianceSegmentationLayer(Function):
         finalSegments, segmentNumsInLines = SegmentDict.getFinalSegments(merges, input.shape[:2], padMask=padMask)
         #print("MERGES: ", merges)
         #print("FINAL SEGMENTS: ", finalSegments)
+
+        # TODO change from here (and also change backward) depending on shortening policy [!]
 
         maxSegments = max(segmentNumsInLines)
         paddingMaskOut = np.full((input.shape[0], maxSegments), False)  #torch.BoolTensor(size=(input.shape[0], maxSegments)).fill_(False)
