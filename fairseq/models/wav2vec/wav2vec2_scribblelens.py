@@ -307,7 +307,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                 + "also contains options, e.g. for var format is hier:<segment_cost>:<shortening_mode>:<batchavg_segment_nr_per_line>, where:\n" \
                 + " i) <segment_cost> is se (squared error), var (variance, se div by length), cos (cosine similarity mapped linearly to distance metric and scaled with segment length) \n" \
                 + " ii) <shortening_mode> is one of: shorten (averages in segments and replaces each with length 1), orig_len (replace with mean in segments, but keep length), " \
-                + "orig_len&guess_orig (as in orig_len, but use original not-averaged representations as masked ones to guess correct one from)\n" \
+                + "orig_len+guess_orig (as in orig_len, but use original not-averaged representations as masked ones to guess correct one from)\n" \
                 + " iii) <batchavg_segment_nr_reduction_per_line> is/are float/floats of format <avg_reduction> or <min_avg_reduction>-<max_avg_reduction>\n"
         )  # TODO add option for reconstruction/rounding loss; maybe also think about an option with ~constant length reduction (but at least one piece each segment) so that 
            #      the long segments are not complete random averaged stuff
@@ -461,10 +461,10 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                 self.segm = "var"
                 assert len(segm_opts) == 4
                 self.hier_segm_merge_priority = segm_opts[1]
-                shorten_opts = segm_opts[2].split("&")
+                shorten_opts = segm_opts[2].split("+")
                 self.hier_segm_shortening_policy = shorten_opts[0]
                 self.hier_segm_guess_orig = len(shorten_opts) > 1 and shorten_opts[1] == "guess_orig"
-                length_reduction_options = list(map(float, segm_opts[2].split("-")))
+                length_reduction_options = list(map(float, segm_opts[3].split("-")))
                 if len(length_reduction_options) == 1:
                     self.hier_segm_strict_reduction = length_reduction_options[0]
                     self.hier_segm_reduction_range = None

@@ -124,7 +124,7 @@ class HierarchicalSegmentationLayer(Function):
     # min and max number of merges adjusted to what is possible - e.g. because of minSegmsPerLine
 
         assert k is None or allowKsumRange is None  # mutually exclusive options
-        assert shorteningPolicy in ("shorten", "orig_len")  # orig_len&guess_orig is only at the higher level
+        assert shorteningPolicy in ("shorten", "orig_len")  # orig_len+guess_orig is only at the higher level
 
         # TODO if input only 2-dim, add another dimension possibly (W x H -> 1 x W x H, consistent with B x W x H - later assuming that in some places)
 
@@ -138,7 +138,7 @@ class HierarchicalSegmentationLayer(Function):
         # https://discuss.pytorch.org/t/cant-convert-cuda-tensor-to-numpy-use-tensor-cpu-to-copy-the-tensor-to-host-memory-first/38301 ,
         # https://discuss.pytorch.org/t/what-is-the-cpu-in-pytorch/15007/3
 
-        varChanges, merges, segmentsDict = hierarchicalSegmentation(input, padMask=padMask, k=k, minSegmsPerLine=minSegmsPerLine, mergePriority=mergePriority, shorteningPolicy=shorteningPolicy)  # won't modify input
+        varChanges, merges, segmentsDict = hierarchicalSegmentation(input, padMask=padMask, k=k, minSegmsPerLine=minSegmsPerLine, mergePriority=mergePriority)  # won't modify input
         #print("MERGES0: ", merges)
         if allowKsumRange:  # full merge done above, k=None, so each line now has minSegmsPerLine, but can also just get it from SegmDict - cleaner
             begin, end = allowKsumRange
@@ -178,11 +178,16 @@ class HierarchicalSegmentationLayer(Function):
         # TODO change from here (and also change backward) depending on shortening policy [!]
 
         maxSegments = max(segmentNumsInLines)
-        paddingMaskOut = np.full((input.shape[0], maxSegments), False)  #torch.BoolTensor(size=(input.shape[0], maxSegments)).fill_(False)
-        for i, n in enumerate(segmentNumsInLines):
-            paddingMaskOut[i][n:] = True
         
-        segmented = np.full((input.shape[0], maxSegments, input.shape[2]), 0.)  #torch.tensor(size=(input.shape[0], maxSegments, input.shape[2])).fill_(0.)
+        if shorteningPolicy == "shorten":
+            segmented = np.full((input.shape[0], maxSegments, input.shape[2]), 0.)  #torch.tensor(size=(input.shape[0], maxSegments, input.shape[2])).fill_(0.)
+            paddingMaskOut = np.full((input.shape[0], maxSegments), False)  #torch.BoolTensor(size=(input.shape[0], maxSegments)).fill_(False)
+            for i, n in enumerate(segmentNumsInLines):
+                paddingMaskOut[i][n:] = True
+            resPadMask = torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice)
+        else:
+            segmented = np.full(input.shape, 0.)
+            resPadMask = padMask
         # can perhaps return a tensor with 1 at the beginning of the segments, -1 at the end, 0s elsewhere
         segmentBorders = np.zeros((input.shape[0], input.shape[1]), dtype=np.int8)
         for line, idxInLine in finalSegments.keys():
@@ -196,7 +201,7 @@ class HierarchicalSegmentationLayer(Function):
             # - marking begins when length 1 as * scaling doesn't need + (scale-1) there if logging only begins
 
         resOutput = torch.tensor(segmented, dtype=inputGPU.dtype).to(inputDevice)   #if wasInputOnGPU else torch.tensor(segmented)  #.requires_grad_(True)
-        resPadMask = torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice)   #if wasPadMaskOnGPU else torch.BoolTensor(paddingMaskOut)
+        # resPadMask created above, as for some reason torch.BoolTensor(paddingMaskOut).to(padMaskInputDevice) thrown an error if paddingMaskOut was a tensor on a correct device
         segmentBorders = torch.IntTensor(segmentBorders).to(inputDevice)
 
         #print("********************", dir(ctx))
@@ -279,6 +284,18 @@ if __name__ == '__main__':
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
     resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
+    print(resOutput)
+    print(resPadMask)
+    print(borders)
+    # [!] here will return 4 segments instead of specified 3, because of specified minSegmsPerLine
+
+    resOutput.sum().backward()  # .backward() needs loss to be a number (tensor of size (1,))
+    print(tensor.grad)
+
+    print("-------------------------- torch4 ---------------------------")
+    # (tensor, padMask, k, kSumRange)
+    tensor.grad.data.zero_()
+    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "orig_len")  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
