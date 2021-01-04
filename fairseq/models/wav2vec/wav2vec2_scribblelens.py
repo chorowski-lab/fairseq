@@ -25,7 +25,7 @@ from fairseq.modules import (
     MultiheadAttention,
     SamePad,
     TransposeLast,
-    HierarchicalVarianceSegmentationLayer,
+    HierarchicalSegmentationLayer,
 )
 from fairseq.modules.transformer_sentence_encoder import init_bert_params
 from fairseq.utils import buffered_arange
@@ -303,11 +303,11 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         )
 
         parser.add_argument(
-            "--segm", type=str, help="use segmentation on representations; 'var' (without ') for variance-based hierarchical segm; " \
-                + "also contains options, e.g. for var format is var:<segment_cost>:<shortening_mode>:<batchavg_segment_nr_per_line>, where:\n" \
+            "--segm", type=str, help="use segmentation on representations; 'hier' (without ') for hierarchical segm; " \
+                + "also contains options, e.g. for var format is hier:<segment_cost>:<shortening_mode>:<batchavg_segment_nr_per_line>, where:\n" \
                 + " i) <segment_cost> is se (squared error), var (variance, se div by length), cos (cosine similarity mapped linearly to distance metric and scaled with segment length) \n" \
                 + " ii) <shortening_mode> is one of: shorten (averages in segments and replaces each with length 1), orig_len (replace with mean in segments, but keep length), " \
-                + "orig_len_guess_orig (as in orig_len, but use original not-averaged representations as masked ones to guess correct one from)\n" \
+                + "orig_len&guess_orig (as in orig_len, but use original not-averaged representations as masked ones to guess correct one from)\n" \
                 + " iii) <batchavg_segment_nr_reduction_per_line> is/are float/floats of format <avg_reduction> or <min_avg_reduction>-<max_avg_reduction>\n"
         )  # TODO add option for reconstruction/rounding loss; maybe also think about an option with ~constant length reduction (but at least one piece each segment) so that 
            #      the long segments are not complete random averaged stuff
@@ -457,19 +457,21 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         if 'segm' in args:
             segm_opts = args.segm.split(":")
             # this part needs to set stuff needed by 'segmentation' method
-            if segm_opts[0] == "var":  # TODO change name to hierarchical or so and add cosinus dist option
+            if segm_opts[0] == "hier":
                 self.segm = "var"
                 assert len(segm_opts) == 4
-                self.var_segm_merge_priority = segm_opts[1]
-                self.var_segm_length_policy = segm_opts[2]
+                self.hier_segm_merge_priority = segm_opts[1]
+                shorten_opts = segm_opts[2].split("&")
+                self.hier_segm_shortening_policy = shorten_opts[0]
+                self.hier_segm_guess_orig = len(shorten_opts) > 1 and shorten_opts[1] == "guess_orig"
                 length_reduction_options = list(map(float, segm_opts[2].split("-")))
                 if len(length_reduction_options) == 1:
-                    self.var_segm_strict_reduction = length_reduction_options[0]
-                    self.var_segm_reduction_range = None
+                    self.hier_segm_strict_reduction = length_reduction_options[0]
+                    self.hier_segm_reduction_range = None
                 elif len(length_reduction_options) == 2:
-                    self.var_segm_strict_reduction = None
+                    self.hier_segm_strict_reduction = None
                     assert length_reduction_options[0] <= length_reduction_options[1]
-                    self.var_segm_reduction_range = tuple(length_reduction_options)
+                    self.hier_segm_reduction_range = tuple(length_reduction_options)
                 else:
                     assert False
             else:
@@ -656,6 +658,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                         # - TODO would otherwise need to change unmasked_features = features.clone() to be after projection instead of before
 
         if self.segm:
+            if self.hier_segm_guess_orig:
+                unmasked_features = features.clone()  # if guessing original features, get them before averaging
             features, padding_mask, segment_borders = self.segmentation(features, padding_mask, 5)  
             # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
 
@@ -672,10 +676,13 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                         # [!] logging here, before projection as this is what representation segmentation uses 
                         # - TODO would otherwise need to change unmasked_features = features.clone() to be after projection instead of before
 
-        unmasked_features = features.clone()
+        if not self.hier_segm_guess_orig:
+            unmasked_features = features.clone()
+
+        assert(unmasked_features is not None)
 
         # doing it here as needed to clone features after segmentation and clone was before post_extract_proj 
-        # - [!] TODO check if this (cloning before post_extract_proj) is intended, looks very weird to me
+        # - [!] TODO maybe check if this (cloning before post_extract_proj) is intended, but perhaps not a very big difference (only linear projection)
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
@@ -775,14 +782,14 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
     def segmentation(self, features, padding_mask, minSegmsPerLine):
         assert self.segm == 'var'  # for now only that supported, to be extended
         non_padded = padding_mask.numel() - padding_mask.sum().item()
-        if self.var_segm_strict_reduction is not None:
-            base_len_sum = int(round(non_padded / self.var_segm_strict_reduction))
-            return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine, self.var_segm_merge_priority)
+        if self.hier_segm_strict_reduction is not None:
+            base_len_sum = int(round(non_padded / self.hier_segm_strict_reduction))
+            return HierarchicalSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine, self.hier_segm_merge_priority, self.hier_segm_shortening_policy)
         else:
-            min_reduction, max_reduction = self.var_segm_reduction_range
+            min_reduction, max_reduction = self.hier_segm_reduction_range
             min_segm = base_len_sum = int(round(non_padded / max_reduction))  #max(features.shape[0], int(round(0.85*base_len_sum)))
             max_segm = base_len_sum = int(round(non_padded / min_reduction))  #min(non_padded, int(round(1.15*base_len_sum)))
-            return HierarchicalVarianceSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine, self.var_segm_merge_priority)
+            return HierarchicalSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine, self.hier_segm_merge_priority)
 
     def log_segmented_image(self, img, borders, name=None, convert_numbers_from_01=True):
         converted_grayscale_img = img*255. if convert_numbers_from_01 else img

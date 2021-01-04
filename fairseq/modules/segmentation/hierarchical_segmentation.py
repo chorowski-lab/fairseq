@@ -29,7 +29,7 @@ def cosDist(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2):  # 
     # but the other one would be more expensive to compute
 
 # [!] lines has to be a numpy array, np.sum() crashes if done on tensor
-def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLine=None, mergePriority="mse"):  # k is sum of number of segments for all lines
+def hierarchicalSegmentation(lines, padMask=None, k=None, minSegmsPerLine=None, mergePriority="mse"):  # k is sum of number of segments for all lines
     
     if mergePriority == "se":  # var not divided by size, square error
         costFun = seDiff  #lambda linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2: seDiff(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2)
@@ -105,7 +105,7 @@ def hierarchicalVarianceSegmentation(lines, padMask=None, k=None, minSegmsPerLin
             
     return varChanges, merges, segmentsDict
 
-class HierarchicalVarianceSegmentationLayer(Function):
+class HierarchicalSegmentationLayer(Function):
 
     @staticmethod
     def flatten(x):
@@ -119,11 +119,12 @@ class HierarchicalVarianceSegmentationLayer(Function):
     # perhaps that ^ is not needed, and restore_shapes also
 
     @staticmethod
-    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None, minSegmsPerLine=None, mergePriority="mse"): 
+    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None, minSegmsPerLine=None, mergePriority="se", shorteningPolicy="orig_len"): 
     # k for strict num of segments (SUM FOR ALL LINES), allowKsumRange for range OF SUM OF SEGMENTS IN ALL LINES and choosing 'best' split point
     # min and max number of merges adjusted to what is possible - e.g. because of minSegmsPerLine
 
         assert k is None or allowKsumRange is None  # mutually exclusive options
+        assert shorteningPolicy in ("shorten", "orig_len")  # orig_len&guess_orig is only at the higher level
 
         # TODO if input only 2-dim, add another dimension possibly (W x H -> 1 x W x H, consistent with B x W x H - later assuming that in some places)
 
@@ -137,7 +138,7 @@ class HierarchicalVarianceSegmentationLayer(Function):
         # https://discuss.pytorch.org/t/cant-convert-cuda-tensor-to-numpy-use-tensor-cpu-to-copy-the-tensor-to-host-memory-first/38301 ,
         # https://discuss.pytorch.org/t/what-is-the-cpu-in-pytorch/15007/3
 
-        varChanges, merges, segmentsDict = hierarchicalVarianceSegmentation(input, padMask=padMask, k=k, minSegmsPerLine=minSegmsPerLine, mergePriority=mergePriority)  # won't modify input
+        varChanges, merges, segmentsDict = hierarchicalSegmentation(input, padMask=padMask, k=k, minSegmsPerLine=minSegmsPerLine, mergePriority=mergePriority, shorteningPolicy=shorteningPolicy)  # won't modify input
         #print("MERGES0: ", merges)
         if allowKsumRange:  # full merge done above, k=None, so each line now has minSegmsPerLine, but can also just get it from SegmDict - cleaner
             begin, end = allowKsumRange
@@ -186,7 +187,10 @@ class HierarchicalVarianceSegmentationLayer(Function):
         segmentBorders = np.zeros((input.shape[0], input.shape[1]), dtype=np.int8)
         for line, idxInLine in finalSegments.keys():
             line, begin, end = finalSegments[(line, idxInLine)]
-            segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
+            if shorteningPolicy == "shorten":
+                segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
+            else:
+                segmented[line][begin:(end+1)] = np.mean(input[line][begin:(end+1)], axis=0)
             segmentBorders[line][end] = -1  
             segmentBorders[line][begin] = 1  # [!] can be e.g. [...0, 0, 1, 1, ...] with segment of length 1 
             # - marking begins when length 1 as * scaling doesn't need + (scale-1) there if logging only begins
@@ -198,6 +202,10 @@ class HierarchicalVarianceSegmentationLayer(Function):
         #print("********************", dir(ctx))
         #[not really needed] ctx.save_for_backward(padMask, resPadMask)
         # save_for_backward is only for tensors / variables / stuff
+        if shorteningPolicy == "shorten":
+            ctx.shortened = True
+        else:
+            ctx.shortened = False
         ctx.finalSegments = finalSegments
         ctx.segmentNumsInLines = segmentNumsInLines
         ctx.inputShape = input.shape
@@ -215,13 +223,18 @@ class HierarchicalVarianceSegmentationLayer(Function):
         #[not really needed] paddingMask, paddingMaskOut = ctx.saved_tensors
         dx = torch.empty(size=ctx.inputShape, dtype=dxThrough.dtype).fill_(0.).to('cpu')
 
+        wasShortened = ctx.shortened
+
         for line, idxInLine in ctx.finalSegments.keys():
             line, begin, end = ctx.finalSegments[(line, idxInLine)]
-            dx[line][begin:(end+1)] = dxThrough[line][idxInLine] / (end - begin + 1)
+            if wasShortened:
+                dx[line][begin:(end+1)] = dxThrough[line][idxInLine] / (end - begin + 1)
+            else:
+                dx[line][begin:(end+1)] = (dxThrough[line][begin:(end+1)].sum(dim=0)) / (end - begin + 1)
 
         dx = dx.to(dxThroughDevice)
 
-        return dx, None, None, None, None, None
+        return dx, None, None, None, None, None, None
 
 
 if __name__ == '__main__':
@@ -234,12 +247,12 @@ if __name__ == '__main__':
 
     tensor = torch.tensor([[[1,2],[1,2],[3,4],[3,4],[3,4],[8,9],[8,9]], [[1,2],[1,2],[3,4],[3,4],[3,4],[8,9],[8,9]]], dtype=torch.float64).requires_grad_(True)
     print(tensor[0][1])
-    print(hierarchicalVarianceSegmentation(tensor.detach().numpy(), padMask=None, k=4, minSegmsPerLine=None, mergePriority="se"))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
-    print(hierarchicalVarianceSegmentation(tensor.detach().numpy(), padMask=None, k=2, minSegmsPerLine=None, mergePriority="var"))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
+    print(hierarchicalSegmentation(tensor.detach().numpy(), padMask=None, k=4, minSegmsPerLine=None, mergePriority="se"))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
+    print(hierarchicalSegmentation(tensor.detach().numpy(), padMask=None, k=2, minSegmsPerLine=None, mergePriority="var"))  # pre-last merge in each line (merging (0,1) and (2,4)) should be 1.92 if summing 'variance vectors'
 
     print("-------------------------- torch ---------------------------")
     # (tensor, padMask, k, kSumRange)
-    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None, "var")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None, "var", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
@@ -252,7 +265,7 @@ if __name__ == '__main__':
     print("-------------------------- torch2 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None, "se")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None, "se", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
@@ -265,7 +278,7 @@ if __name__ == '__main__':
     print("-------------------------- torch3 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask, borders = HierarchicalVarianceSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)

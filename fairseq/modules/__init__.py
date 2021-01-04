@@ -35,7 +35,7 @@ from .transpose_last import TransposeLast
 from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
 from .vggblock import VGGBlock
-from .segmentation.hierarchical_variance_segmentation import hierarchicalVarianceSegmentation, HierarchicalVarianceSegmentationLayer
+from .segmentation.hierarchical_segmentation import hierarchicalSegmentation, HierarchicalSegmentationLayer
 
 __all__ = [
     "AdaptiveInput",
@@ -73,7 +73,7 @@ __all__ = [
     "TransformerEncoderLayer",
     "TransposeLast",
     "VGGBlock",
-    "hierarchicalVarianceSegmentation",
-    "HierarchicalVarianceSegmentationLayer",
+    "hierarchicalSegmentation",
+    "HierarchicalSegmentationLayer",
     "unfold1d",
 ]
