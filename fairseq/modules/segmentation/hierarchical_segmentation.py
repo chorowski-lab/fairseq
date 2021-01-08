@@ -28,6 +28,20 @@ def cosDist(linearSum1, squaresSum1, size1, linearSum2, squaresSum2, size2):  # 
     # but that's perhaps not exactly this sum as cosine_similarity ( (sum_i a_i) , x ) is not the same as (sum_i cosine_similarity ( a_i , x )) )
     # but the other one would be more expensive to compute
 
+def linRoundingLoss(mean, originals):
+    return torch.abs(originals - mean).sum()
+
+def varRoundingLoss(mean, originals):
+    return torch.mean(torch.square(originals - mean), dim=0).sum()
+
+def seRoundingLoss(mean, originals):
+    return torch.square(originals - mean).sum()
+
+def cosRoundingLoss(mean, originals):
+    unscaledSim = torch.matmul(mean, originals) / (torch.sqrt(torch.dot(mean, mean)) * torch.sqrt(torch.matmul(originals, originals)))
+    unscaledAsDist = -unscaledSim + 1.
+    return unscaledAsDist.sum()
+
 # [!] lines has to be a numpy array, np.sum() crashes if done on tensor
 def hierarchicalSegmentation(lines, padMask=None, k=None, minSegmsPerLine=None, mergePriority="mse"):  # k is sum of number of segments for all lines
     
@@ -119,19 +133,28 @@ class HierarchicalSegmentationLayer(Function):
     # perhaps that ^ is not needed, and restore_shapes also
 
     @staticmethod
-    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None, minSegmsPerLine=None, mergePriority="se", shorteningPolicy="orig_len"): 
+    def forward(ctx, inputGPU, padMask=None, k=None, allowKsumRange=None, minSegmsPerLine=None, mergePriority="se", shorteningPolicy="orig_len", roundingLossType=None): 
     # k for strict num of segments (SUM FOR ALL LINES), allowKsumRange for range OF SUM OF SEGMENTS IN ALL LINES and choosing 'best' split point
     # min and max number of merges adjusted to what is possible - e.g. because of minSegmsPerLine
 
         assert k is None or allowKsumRange is None  # mutually exclusive options
         assert shorteningPolicy in ("shorten", "orig_len")  # orig_len+guess_orig is only at the higher level
+        assert roundingLossType in ("se", "var", "lin", "cos", None)
+        if roundingLossType == "se":  
+            roundingLossFun = seRoundingLoss  
+        elif roundingLossType == "var":  
+            roundingLossFun = varRoundingLoss 
+        elif roundingLossType == "lin":  
+            roundingLossFun = linRoundingLoss  
+        elif roundingLossType == "cos":
+            roundingLossFun = cosRoundingLoss  
+        else:
+            assert False
 
         # TODO if input only 2-dim, add another dimension possibly (W x H -> 1 x W x H, consistent with B x W x H - later assuming that in some places)
 
         inputDevice = inputGPU.device
         padMaskInputDevice = padMask.device if padMask is not None else False
-
-        # TODO TODO add shortening policy stuff !
 
         # tensor to CPU  (don't really need copy, will just need to put tensors in segmentsDict)
         input = inputGPU.detach().to('cpu').numpy()  
@@ -175,8 +198,6 @@ class HierarchicalSegmentationLayer(Function):
         #print("MERGES: ", merges)
         #print("FINAL SEGMENTS: ", finalSegments)
 
-        # TODO change from here (and also change backward) depending on shortening policy [!]
-
         maxSegments = max(segmentNumsInLines)
         
         if shorteningPolicy == "shorten":
@@ -190,12 +211,14 @@ class HierarchicalSegmentationLayer(Function):
             resPadMask = padMask
         # can perhaps return a tensor with 1 at the beginning of the segments, -1 at the end, 0s elsewhere
         segmentBorders = np.zeros((input.shape[0], input.shape[1]), dtype=np.int8)
+        roundingLoss = torch.tensor(0, dtype=torch.float32).requires_grad_(True).to(inputDevice)  # TODO dtype (?)
         for line, idxInLine in finalSegments.keys():
             line, begin, end = finalSegments[(line, idxInLine)]
             if shorteningPolicy == "shorten":
                 segmented[line][idxInLine] = np.mean(input[line][begin:(end+1)], axis=0)  #torch.mean(input[line][begin:(end+1)])
             else:
                 segmented[line][begin:(end+1)] = np.mean(input[line][begin:(end+1)], axis=0)
+            roundingLoss += roundingLossFun(torch.mean(inputGPU[line][begin:(end+1)], dim=0), inputGPU[line][begin:(end+1)])
             segmentBorders[line][end] = -1  
             segmentBorders[line][begin] = 1  # [!] can be e.g. [...0, 0, 1, 1, ...] with segment of length 1 
             # - marking begins when length 1 as * scaling doesn't need + (scale-1) there if logging only begins
@@ -218,10 +241,11 @@ class HierarchicalSegmentationLayer(Function):
 
         #print("FINAL SEGMENTS: ", finalSegments, segmentNumsInLines)
 
-        return resOutput, resPadMask, segmentBorders  #, finalSegments, segmentNumsInLines can only return torch variables... TODO maybe check how to fetch this info, but not sure if needed
+        # with rounding loss None, will just return 0
+        return resOutput, resPadMask, segmentBorders, roundingLoss  #, finalSegments, segmentNumsInLines can only return torch variables... TODO maybe check how to fetch this info, but not sure if needed
 
     @staticmethod
-    def backward(ctx, dxThrough, outPadMask=None, segmentBorders=None):  #, finalSegments=None, segmentNumsInLines=None):
+    def backward(ctx, dxThrough, outPadMask=None, segmentBorders=None, roundingLoss=None):  #, finalSegments=None, segmentNumsInLines=None):
 
         dxThroughDevice = dxThrough.device
 
@@ -239,7 +263,7 @@ class HierarchicalSegmentationLayer(Function):
 
         dx = dx.to(dxThroughDevice)
 
-        return dx, None, None, None, None, None, None
+        return dx, None, None, None, None, None, None, None
 
 
 if __name__ == '__main__':
@@ -257,7 +281,7 @@ if __name__ == '__main__':
 
     print("-------------------------- torch ---------------------------")
     # (tensor, padMask, k, kSumRange)
-    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None, "var", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders, roundingLoss = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), None, (2,5), None, "var", "shorten", None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
@@ -270,7 +294,7 @@ if __name__ == '__main__':
     print("-------------------------- torch2 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None, "se", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders, roundingLoss = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, None, "se", "shorten", None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
@@ -283,7 +307,7 @@ if __name__ == '__main__':
     print("-------------------------- torch3 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "shorten")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders, roundingLoss = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "shorten", None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)
@@ -295,7 +319,7 @@ if __name__ == '__main__':
     print("-------------------------- torch4 ---------------------------")
     # (tensor, padMask, k, kSumRange)
     tensor.grad.data.zero_()
-    resOutput, resPadMask, borders = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "orig_len")  #(2, 5))  # can;t have keyword args for torch Functions...
+    resOutput, resPadMask, borders, roundingLoss = HierarchicalSegmentationLayer.apply(tensor, torch.tensor([[True, False, False, False, False, False, False], [False, False, False, False, False, False, True]]), 3, None, 2, "se", "orig_len", None)  #(2, 5))  # can;t have keyword args for torch Functions...
     print(resOutput)
     print(resPadMask)
     print(borders)

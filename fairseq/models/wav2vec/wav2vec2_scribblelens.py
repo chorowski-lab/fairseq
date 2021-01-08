@@ -304,12 +304,14 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         parser.add_argument(
             "--segm", type=str, help="use segmentation on representations; 'hier' (without ') for hierarchical segm; " \
-                + "also contains options, e.g. for var format is hier:<segment_cost>:<shortening_mode>:<batchavg_segment_nr_per_line>, where:\n" \
+                + "also contains options, e.g. for var format is hier:<segment_cost>:<rounding_loss>:<shortening_mode>:<batchavg_segment_nr_per_line>, where:\n" \
                 + " i) <segment_cost> is se (squared error), var (variance, se div by length), cos (cosine similarity mapped linearly to distance metric and scaled with segment length) \n" \
-                + " ii) <shortening_mode> is one of: shorten (averages in segments and replaces each with length 1), orig_len (replace with mean in segments, but keep length), " \
+                + " ii) <rounding_loss> is additional rounding loss to use (se, var, lin, cos, or none) - measuring distance of average given for segment from original representations; " \
+                + "need to add weight for this loss in loss-weights param if not none\n" \
+                + " iii) <shortening_mode> is one of: shorten (averages in segments and replaces each with length 1), orig_len (replace with mean in segments, but keep length), " \
                 + "orig_len+guess_orig (as in orig_len, but use original not-averaged representations as masked ones to guess correct one from)\n" \
-                + " iii) <batchavg_segment_nr_reduction_per_line> is/are float/floats of format <avg_reduction> or <min_avg_reduction>-<max_avg_reduction>\n"
-        )  # TODO add option for reconstruction/rounding loss; maybe also think about an option with ~constant length reduction (but at least one piece each segment) so that 
+                + " iv) <batchavg_segment_nr_reduction_per_line> is/are float/floats of format <avg_reduction> or <min_avg_reduction>-<max_avg_reduction>\n"
+        )  # TODO maybe also think about an option with ~constant length reduction (but at least one piece each segment) so that 
            #      the long segments are not complete random averaged stuff
 
         parser.add_argument(
@@ -459,12 +461,13 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             # this part needs to set stuff needed by 'segmentation' method
             if segm_opts[0] == "hier":
                 self.segm = "var"
-                assert len(segm_opts) == 4
+                assert len(segm_opts) == 5
                 self.hier_segm_merge_priority = segm_opts[1]
-                shorten_opts = segm_opts[2].split("+")
+                self.hier_segm_rounding_loss = segm_opts[2] if segm_opts[2] != "none" else None
+                shorten_opts = segm_opts[3].split("+")
                 self.hier_segm_shortening_policy = shorten_opts[0]
                 self.hier_segm_guess_orig = len(shorten_opts) > 1 and shorten_opts[1] == "guess_orig"
-                length_reduction_options = list(map(float, segm_opts[3].split("-")))
+                length_reduction_options = list(map(float, segm_opts[4].split("-")))
                 if len(length_reduction_options) == 1:
                     self.hier_segm_strict_reduction = length_reduction_options[0]
                     self.hier_segm_reduction_range = None
@@ -660,7 +663,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         if self.segm:
             if self.hier_segm_guess_orig:
                 unmasked_features = features.clone()  # if guessing original features, get them before averaging
-            features, padding_mask, segment_borders = self.segmentation(features, padding_mask, 5)  
+            features, padding_mask, segment_borders, rounding_loss = self.segmentation(features, padding_mask, 5)
             # [!] minSegmsPerLine needs to be at least a few so that part with masking with at least 2 masks works correctly
 
         if self.need_logging:
@@ -676,7 +679,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
                         # [!] logging here, before projection as this is what representation segmentation uses 
                         # - TODO would otherwise need to change unmasked_features = features.clone() to be after projection instead of before
 
-        if not self.hier_segm_guess_orig:
+        if not self.segm or not self.hier_segm_guess_orig:
             unmasked_features = features.clone()
 
         assert(unmasked_features is not None)
@@ -776,6 +779,8 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
             result["code_perplexity"] = code_ppl
             result["num_vars"] = num_vars
             result["temp"] = curr_temp
+        if self.segm and self.hier_segm_rounding_loss is not None:
+            result["rounding_loss"] = rounding_loss
 
         return result
 
@@ -784,12 +789,12 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
         non_padded = padding_mask.numel() - padding_mask.sum().item()
         if self.hier_segm_strict_reduction is not None:
             base_len_sum = int(round(non_padded / self.hier_segm_strict_reduction))
-            return HierarchicalSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine, self.hier_segm_merge_priority, self.hier_segm_shortening_policy)
+            return HierarchicalSegmentationLayer.apply(features, padding_mask, base_len_sum, None, minSegmsPerLine, self.hier_segm_merge_priority, self.hier_segm_shortening_policy, self.hier_segm_rounding_loss)
         else:
             min_reduction, max_reduction = self.hier_segm_reduction_range
             min_segm = base_len_sum = int(round(non_padded / max_reduction))  #max(features.shape[0], int(round(0.85*base_len_sum)))
             max_segm = base_len_sum = int(round(non_padded / min_reduction))  #min(non_padded, int(round(1.15*base_len_sum)))
-            return HierarchicalSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine, self.hier_segm_merge_priority)
+            return HierarchicalSegmentationLayer.apply(features, padding_mask, None, (min_segm, max_segm), minSegmsPerLine, self.hier_segm_merge_priority, self.hier_segm_shortening_policy, self.hier_segm_rounding_loss)
 
     def log_segmented_image(self, img, borders, name=None, convert_numbers_from_01=True):
         converted_grayscale_img = img*255. if convert_numbers_from_01 else img
@@ -870,6 +875,9 @@ class Wav2Vec2ModelSL(BaseFairseqModel):
 
         if "features_pen" in net_output:
             pen.append(net_output["features_pen"])
+
+        if self.segm and self.hier_segm_rounding_loss is not None:
+            pen.append(net_output["rounding_loss"])
 
         return pen
 
