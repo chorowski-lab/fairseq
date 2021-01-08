@@ -154,6 +154,7 @@ class ProbedModel:
 
     def attach_probes(self, probe_defs):
         if not probe_defs:
+            self._probes = None
             return
         self._probes = torch.nn.ModuleDict(
             {
@@ -163,6 +164,8 @@ class ProbedModel:
         )
 
     def get_probe_losses(self, minibatch):
+        if not self._probes:
+            return 0.0, {}
         loss = 0.0
         extra_log_keys = {}
         for probe_name, probe in self._probes.items():

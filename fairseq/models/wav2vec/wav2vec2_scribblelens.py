@@ -34,6 +34,7 @@ from .wav2vec2 import Wav2Vec2Config
 @dataclass
 class Wav2Vec2SLConfig(Wav2Vec2Config):
     probe_defs: Optional[Dict[str, Any]] = field(default=None, metadata={"help": "probes"})
+    num_channels: int = field(default=1, metadata={"help": "number of input channels"})
     compute_alignment_metrics: bool = field(default=False, metadata={"help": "compute mutual info and rand scores"})
 
 @register_model("wav2vec2_scribblelens", dataclass=Wav2Vec2SLConfig)
@@ -47,6 +48,7 @@ class Wav2Vec2ModelSL(BaseFairseqModel, probed_model.ProbedModel):
 
         self.feature_extractor = ConvFeatureExtractionModel(
             conv_layers=feature_enc_layers,
+            in_d=cfg.num_channels,
             dropout=0.0,
             mode=cfg.extractor_mode,
             conv_bias=cfg.conv_bias,
@@ -461,6 +463,7 @@ class ConvFeatureExtractionModel(nn.Module):
     def __init__(
         self,
         conv_layers: List,
+        in_d: int=1,
         dropout: float = 0.0,
         mode: str = "default",
         conv_bias: bool = False,
@@ -510,7 +513,6 @@ class ConvFeatureExtractionModel(nn.Module):
             else:
                 return nn.Sequential(make_conv(), nn.Dropout(p=dropout), nn.GELU())
 
-        in_d = 1
         self.conv_layers = nn.ModuleList()
         for i, cl in enumerate(conv_layers):
             assert len(cl) == 4, "invalid conv definition: " + str(cl)
@@ -531,9 +533,14 @@ class ConvFeatureExtractionModel(nn.Module):
             in_d = dim
 
     def forward(self, x):
-
-        # BxHxW -> BxCxWxH
-        x = x.unsqueeze(1).transpose(-2, -1).contiguous()
+        # print(x.shape)
+        # import sys; sys.exit(1)
+        if len(x.shape) == 3:
+            # BxHxW -> BxCxHxW
+            x = x.unsqueeze(1)
+        
+        # BxCxHxW -> BxCxWxH
+        x = x.transpose(-2, -1).contiguous()
 
         for conv in self.conv_layers:
             x = conv(x)
