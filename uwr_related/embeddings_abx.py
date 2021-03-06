@@ -11,16 +11,14 @@ import sys
 import argparse
 from itertools import chain
 from pathlib import Path
-from time import time
+import time
+import copy
 import numpy as np
 import soundfile as sf
 
 import torch
-from fairseq import checkpoint_utils, distributed_utils, options, utils
-from fairseq.dataclass.utils import convert_namespace_to_omegaconf
-from fairseq.logging import metrics, progress_bar
-from omegaconf import DictConfig
-
+import torch.nn as nn
+import torch.nn.functional as F
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -29,27 +27,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger("zerospeech2021 abx")
-
-def loadCheckpoint(path_checkpoint, path_data):
-    """
-    Load lstm_lm model from checkpoint.
-    """
-    # Set up the args Namespace
-    model_args = argparse.Namespace(
-        task="language_modeling",
-        output_dictionary_size=-1,
-        data=path_data,
-        path=path_checkpoint
-        )
-
-    # Setup task
-    #task = tasks.setup_task(model_args)
-    
-    # Load model
-    models, _model_args = checkpoint_utils.load_model_ensemble([model_args.path])
-    model = models[0]
-    
-    return model#, task
 
 def parse_args():
     # Run parameters
@@ -67,6 +44,10 @@ def parse_args():
                         help="Run on a cpu machine.")
     parser.add_argument("--file_extension", type=str, default="wav",
                           help="Extension of the audio files in the dataset (default: wav).")
+    parser.add_argument("--model", type=str, default="wav2vec2",
+                          help="Pre-trained model architecture ('wav2vec2' [default] or 'cpc').")
+    parser.add_argument("--path_cpc", type=str, default="/pio/scratch/1/i273233/cpc",
+                          help="Path to the root of cpc repo.")
     return parser.parse_args()
 
 def main():
@@ -77,9 +58,34 @@ def main():
     # Load the model
     print("")
     print(f"Loading model from {args.path_checkpoint}")
-    model = loadCheckpoint(args.path_checkpoint, args.path_data)
-    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+    if args.model == "cpc":
+        sys.path.append(os.path.abspath(args.path_cpc))
+        from cpc.feature_loader import loadModel, FeatureModule
+        model = loadModel([args.path_checkpoint])[0]
+    else:
+        from fairseq import checkpoint_utils
+
+        def loadCheckpoint(path_checkpoint, path_data):
+            """
+            Load lstm_lm model from checkpoint.
+            """
+            # Set up the args Namespace
+            model_args = argparse.Namespace(
+                task="language_modeling",
+                output_dictionary_size=-1,
+                data=path_data,
+                path=path_checkpoint
+                )
+            
+            # Load model
+            models, _model_args = checkpoint_utils.load_model_ensemble([model_args.path])
+            model = models[0]
+            return model
+
+        model = loadCheckpoint(args.path_checkpoint, args.path_data)
     
+    device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
+
     # Register the hooks
     layer_outputs = {}
     def get_layer_output(name):
@@ -92,13 +98,22 @@ def main():
                 layer_outputs[name] = output.detach().squeeze(0).cpu().numpy()
         return hook
 
-    for i in range(len(model.encoder.layers)):
-        layer_name = "layer_{}".format(i)
-        model.encoder.layers[i].register_forward_hook(get_layer_output(layer_name))
-    model.register_forward_hook(get_layer_output("last"))
+    layer_names = []
+    if args.model == "cpc":
+        layer_name = os.path.basename(os.path.dirname(args.path_checkpoint))
+        layer_names.append(layer_name)
+        model.gAR.register_forward_hook(get_layer_output(layer_name))
+    else:
+        for i in range(len(model.encoder.layers)):
+            layer_name = "layer_{}".format(i)
+            layer_names.append(layer_name)
+            model.encoder.layers[i].register_forward_hook(get_layer_output(layer_name))
+        layer_name = "last"
+        layer_names.append(layer_name)
+        model.register_forward_hook(get_layer_output(layer_name))
 
     model = model.eval().to(device)  
-    print("Wav2Vec2 model loaded!")
+    print("Model loaded!")
     print(model)
 
     # Extract values from chosen layers and save them to files
@@ -117,7 +132,12 @@ def main():
                 input_f = os.path.join(dataset_path, f)
                 x, sample_rate = sf.read(input_f)
                 x = torch.tensor(x).float().reshape(1,-1).to(device)
-                net_output = model(x, features_only=True)
+                
+                if args.model == "cpc":
+                    encodedData = model.gEncoder(x.unsqueeze(1)).permute(0, 2, 1)
+                    output = model.gAR(encodedData)
+                else:
+                    output = model(x, features_only=True)["x"]
 
                 for layer_name, value in layer_outputs.items():
                     output_dir = os.path.join(args.path_output_dir, layer_name, phonetic, dataset)
@@ -126,5 +146,9 @@ def main():
                     np.savetxt(out_f, value)
 
 if __name__ == "__main__":
+    #import ptvsd
+    #ptvsd.enable_attach(('0.0.0.0', 7310))
+    #print("Attach debugger now")
+    #ptvsd.wait_for_attach()
     main()
 
